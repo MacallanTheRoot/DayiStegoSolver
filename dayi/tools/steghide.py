@@ -1,0 +1,292 @@
+"""
+dayi/tools/steghide.py
+~~~~~~~~~~~~~~~~~~~~~~~
+Async runners for `steghide`:
+  1. Single-pass info extraction (no password).
+  2. Brute-force extraction using a streaming wordlist iterator OR an
+     in-memory wordlist (for the dynamic mini-wordlist feature in runner.py).
+
+steghide works on JPEG and BMP files.
+
+SMART ROUTING: A magic-byte format check runs before any subprocess is spawned.
+    If the target file is not JPEG, BMP, or WAV, the tool is skipped immediately.
+
+MINI-WORDLIST SUPPORT: run_steghide_bruteforce() accepts an optional
+    `wordlist_data` list. When provided, it is used instead of streaming from
+    the wordlist file, enabling the dynamic in-memory mini-wordlist feature.
+"""
+import asyncio
+import logging
+import re
+import tempfile
+import time
+from pathlib import Path
+from typing import Iterator
+
+from dayi.reporter import ToolResult
+from dayi.scanner import scan_file
+from dayi.tools._base import (
+    FileType,
+    async_run_command,
+    describe_file_type,
+    get_file_type,
+    is_tool_available,
+    iter_wordlist_lines,
+    make_skipped_result,
+)
+from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
+
+logger = logging.getLogger("dayi")
+
+TOOL_NAME    = "steghide"
+BINARY       = "steghide"
+BF_TOOL_NAME = "steghide_bf"
+
+# Formats natively supported by steghide
+_SUPPORTED_FORMATS: frozenset[FileType] = frozenset({
+    FileType.JPEG,
+    FileType.BMP,
+    FileType.WAV,
+})
+
+
+async def run_steghide(
+    target: Path,
+    flag_pattern: re.Pattern,
+    timeout: float = 30.0,
+) -> ToolResult:
+    """
+    Run steghide info and attempt extraction with an empty passphrase.
+
+    Performs a magic-byte format check before spawning any subprocess. If the
+    file is not JPEG, BMP, or WAV, the tool is skipped immediately.
+
+    Args:
+        target:       Path to the target file.
+        flag_pattern: Compiled regex pattern to search for flags.
+        timeout:      Subprocess timeout in seconds.
+
+    Returns:
+        Populated ToolResult.
+    """
+    cmd = [BINARY, "info", "-p", "", str(target)]
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(
+            TOOL_NAME,
+            f"{BINARY} not found on PATH (sudo apt install steghide)",
+            cmd,
+        )
+
+    # ── Smart routing: magic-byte format guard ──────────────────────────────
+    file_type = get_file_type(target)
+    if file_type not in _SUPPORTED_FORMATS:
+        fmt_label = describe_file_type(file_type)
+        skip_reason = f"steghide requires JPEG/BMP/WAV; detected format: {file_type}"
+        logger.info(
+            f"[-] Yeğenim bu dosya {fmt_label} formatında, "
+            f"steghide buna yaramaz, boşuna yormayalım aleti. Atlıyorum..."
+        )
+        return make_skipped_result(TOOL_NAME, skip_reason, cmd)
+
+    logger.info(TOOL_INTROS[TOOL_NAME])
+    rc, stdout, stderr, elapsed, timed_out = await async_run_command(
+        cmd, TOOL_NAME, timeout, stdin_data=b"\n"
+    )
+
+    flags: list[str] = []
+    extracted_flags: dict[str, list[str]] = {}
+
+    if not timed_out:
+        logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
+        flags = list(dict.fromkeys(
+            [m.group(0) for m in flag_pattern.finditer(stdout)] +
+            [m.group(0) for m in flag_pattern.finditer(stderr)]
+        ))
+
+        # Attempt actual extraction with empty passphrase
+        with tempfile.TemporaryDirectory(prefix="dayi_steghide_") as tmpdir:
+            out_path = Path(tmpdir) / "steghide_extracted.bin"
+            extract_cmd = [
+                BINARY, "extract", "-sf", str(target),
+                "-p", "", "-xf", str(out_path), "-f",
+            ]
+            await async_run_command(extract_cmd, TOOL_NAME, timeout, stdin_data=b"\n")
+            if out_path.exists():
+                hits = scan_file(out_path, flag_pattern)
+                if hits:
+                    extracted_flags["steghide_extracted"] = hits
+                    flags = list(dict.fromkeys(flags + hits))
+                    logger.info(
+                        f"[steghide] Boş şifreyle dosya çıkarıldı ve {len(hits)} flag bulundu!"
+                    )
+
+    return ToolResult(
+        tool_name=TOOL_NAME,
+        command=cmd,
+        return_code=rc,
+        stdout=stdout,
+        stderr=stderr,
+        flags_found=flags,
+        elapsed_seconds=elapsed,
+        timed_out=timed_out,
+        extracted_flags=extracted_flags,
+    )
+
+
+async def run_steghide_bruteforce(
+    target: Path,
+    flag_pattern: re.Pattern,
+    wordlist_path: Path | None = None,
+    wordlist_data: list[str] | None = None,
+    timeout_per_attempt: float = 10.0,
+    max_concurrent: int = 8,
+    bf_limit: int = 1000,
+) -> ToolResult:
+    """
+    Brute-force steghide extraction using a wordlist source.
+
+    Accepts EITHER a wordlist file (streamed lazily, memory-efficient) OR an
+    in-memory list of passwords (for the dynamic mini-wordlist feature). The
+    `wordlist_data` parameter takes precedence when both are provided.
+
+    Also performs a magic-byte format guard — non-supported formats are skipped
+    without spawning any subprocess.
+
+    Args:
+        target:              Path to the target file.
+        flag_pattern:        Compiled regex pattern to search for flags.
+        wordlist_path:       Path to the password wordlist file (file-based BF).
+        wordlist_data:       In-memory list of passwords (mini-wordlist BF).
+                             When provided, wordlist_path and bf_limit are ignored.
+        timeout_per_attempt: Per-password timeout in seconds.
+        max_concurrent:      Maximum simultaneous steghide processes.
+        bf_limit:            Max passwords from wordlist_path (0 = unlimited).
+                             Ignored when wordlist_data is provided.
+
+    Returns:
+        Populated ToolResult. Stops at first successful extraction.
+    """
+    cmd_template = [BINARY, "extract", "-sf", str(target), "-p", "<PASSWORD>", "-xf", "<OUTFILE>", "-f"]
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
+        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
+
+    # ── Smart routing: magic-byte format guard ──────────────────────────────
+    file_type = get_file_type(target)
+    if file_type not in _SUPPORTED_FORMATS:
+        fmt_label = describe_file_type(file_type)
+        skip_reason = f"steghide_bf requires JPEG/BMP/WAV; detected format: {file_type}"
+        logger.info(
+            f"[-] Yeğenim bu dosya {fmt_label}, steghide brute-force'u atlıyorum..."
+        )
+        return make_skipped_result(BF_TOOL_NAME, skip_reason, cmd_template)
+
+    # ── Determine password source ─────────────────────────────────────────────
+    using_mini_wordlist = wordlist_data is not None
+
+    if using_mini_wordlist:
+        password_iter: Iterator[str] = iter(wordlist_data)  # type: ignore[assignment]
+        source_desc = f"mini-wordlist ({len(wordlist_data)} token)"
+        # No subprocess limit needed — list is already bounded
+    elif wordlist_path and wordlist_path.exists():
+        password_iter = iter_wordlist_lines(wordlist_path, limit=bf_limit)
+        source_desc = f"wordlist: {wordlist_path.name}"
+        if bf_limit:
+            logger.warning(
+                f"[steghide_bf] Yeğenim bu Python'la rockyou'yu baştan sona denemek "
+                f"aylar sürer, ben ilk {bf_limit} şifreyi deniyorum. "
+                f"Daha fazlası için stegseek'e bak!"
+            )
+    else:
+        msg = f"No valid wordlist source provided (wordlist_path={wordlist_path}, wordlist_data={'set' if wordlist_data else 'None'})"
+        logger.error(f"[steghide_bf] {msg}")
+        return make_skipped_result(BF_TOOL_NAME, msg, cmd_template)
+
+    logger.info(TOOL_INTROS[BF_TOOL_NAME])
+
+    found_password: str | None = None
+    found_flags: list[str] = []
+    total_tested = 0
+    start = time.monotonic()
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def try_password(password: str, tmpdir: Path) -> tuple[bool, list[str], str]:
+        """Attempt extraction with a single password. Returns (success, flags, password)."""
+        out_path = tmpdir / f"out_{hash(password) & 0xFFFFFF}.bin"
+        cmd = [
+            BINARY, "extract", "-sf", str(target),
+            "-p", password, "-xf", str(out_path), "-f",
+        ]
+        async with semaphore:
+            rc, _, _, _, timed_out = await async_run_command(
+                cmd, BF_TOOL_NAME, timeout_per_attempt, stdin_data=b"\n"
+            )
+        if not timed_out and rc == 0 and out_path.exists():
+            hits = scan_file(out_path, flag_pattern)
+            return True, hits, password
+        return False, [], password
+
+    with tempfile.TemporaryDirectory(prefix="dayi_steghide_bf_") as tmpdir_str:
+        tmpdir = Path(tmpdir_str)
+        batch_size = max_concurrent * 4
+        batch: list[str] = []
+
+        for password in password_iter:
+            batch.append(password)
+            if len(batch) < batch_size:
+                continue
+
+            tasks = [try_password(pw, tmpdir) for pw in batch]
+            results = await asyncio.gather(*tasks)
+            total_tested += len(batch)
+            batch = []
+
+            for success, flags, pw in results:
+                if success:
+                    found_password = pw
+                    found_flags.extend(flags)
+                    logger.log(
+                        25,
+                        f"[steghide_bf] 🎯 Şifre bulundu: '{pw}' — Yeğenim bu işi hallettik!",
+                    )
+
+            if found_password:
+                break
+
+            if not using_mini_wordlist and total_tested % 1000 == 0:
+                logger.info(f"[steghide_bf] {total_tested} şifre denendi...")
+
+        # Flush the last partial batch
+        if batch and not found_password:
+            tasks = [try_password(pw, tmpdir) for pw in batch]
+            results = await asyncio.gather(*tasks)
+            total_tested += len(batch)
+            for success, flags, pw in results:
+                if success:
+                    found_password = pw
+                    found_flags.extend(flags)
+                    logger.log(
+                        25,
+                        f"[steghide_bf] 🎯 Şifre bulundu: '{pw}' — Yeğenim bu işi hallettik!",
+                    )
+
+    elapsed = time.monotonic() - start
+    found_flags = list(dict.fromkeys(found_flags))
+    stdout_summary = (
+        f"Brute-force tamamlandı [{source_desc}]. {total_tested} şifre denendi.\n"
+        f"Bulunan şifre: {found_password or 'Yok'}\n"
+    )
+
+    return ToolResult(
+        tool_name=BF_TOOL_NAME,
+        command=cmd_template,
+        return_code=0 if found_password else 1,
+        stdout=stdout_summary,
+        stderr="",
+        flags_found=found_flags,
+        elapsed_seconds=elapsed,
+        timed_out=False,
+    )

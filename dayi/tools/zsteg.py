@@ -1,0 +1,93 @@
+"""
+dayi/tools/zsteg.py
+~~~~~~~~~~~~~~~~~~~~
+Async runner for `zsteg`: LSB steganography analysis for PNG and BMP files.
+
+zsteg is a Ruby gem. Install with: gem install zsteg
+
+SMART ROUTING: zsteg only supports PNG and BMP. If the target file's magic bytes
+indicate any other format (JPEG, WAV, ZIP, etc.), the tool is skipped immediately
+without spawning a subprocess. The Dayı persona explains why.
+"""
+import logging
+import re
+from pathlib import Path
+
+from dayi.reporter import ToolResult
+from dayi.tools._base import (
+    FileType,
+    async_run_command,
+    describe_file_type,
+    get_file_type,
+    is_tool_available,
+    make_skipped_result,
+)
+from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
+
+logger = logging.getLogger("dayi")
+
+TOOL_NAME = "zsteg"
+BINARY    = "zsteg"
+
+# Formats that zsteg can actually analyze
+_SUPPORTED_FORMATS: frozenset[FileType] = frozenset({FileType.PNG, FileType.BMP})
+
+
+async def run_zsteg(
+    target: Path,
+    flag_pattern: re.Pattern,
+    timeout: float = 120.0,
+) -> ToolResult:
+    """
+    Run zsteg against the target file (PNG/BMP only) and scan output for flags.
+
+    Performs a magic-byte format check before spawning any subprocess. If the
+    file is not PNG or BMP, the tool is skipped immediately with a Dayı-flavored
+    explanation log message.
+
+    Args:
+        target:       Path to the target file.
+        flag_pattern: Compiled regex pattern to search for flags.
+        timeout:      Subprocess timeout in seconds (zsteg can be slow on large files).
+
+    Returns:
+        Populated ToolResult.
+    """
+    cmd = [BINARY, "-a", str(target)]
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(TOOL_NAME, f"{BINARY} not found on PATH (gem install zsteg)", cmd)
+
+    # ── Smart routing: magic-byte format guard ──────────────────────────────
+    file_type = get_file_type(target)
+    if file_type not in _SUPPORTED_FORMATS:
+        fmt_label = describe_file_type(file_type)
+        skip_reason = f"zsteg requires PNG/BMP; detected format: {file_type}"
+        logger.info(
+            f"[-] Yeğenim bu dosya {fmt_label} formatında, "
+            f"zsteg buna yaramaz, boşuna yormayalım aleti. Atlıyorum..."
+        )
+        return make_skipped_result(TOOL_NAME, skip_reason, cmd)
+
+    logger.info(TOOL_INTROS[TOOL_NAME])
+    rc, stdout, stderr, elapsed, timed_out = await async_run_command(cmd, TOOL_NAME, timeout)
+
+    flags: list[str] = []
+    if not timed_out:
+        logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
+        flags = list(dict.fromkeys(
+            [m.group(0) for m in flag_pattern.finditer(stdout)] +
+            [m.group(0) for m in flag_pattern.finditer(stderr)]
+        ))
+
+    return ToolResult(
+        tool_name=TOOL_NAME,
+        command=cmd,
+        return_code=rc,
+        stdout=stdout,
+        stderr=stderr,
+        flags_found=flags,
+        elapsed_seconds=elapsed,
+        timed_out=timed_out,
+    )

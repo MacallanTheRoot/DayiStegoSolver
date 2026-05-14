@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dayi-stego-solver"
+version = "3.0.0"
+description = "CTF Steganography Brute-force & Analysis CLI — 'Hallederiz Yeğenim' Edition"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["ctf", "steganography", "stego", "security", "forensics", "ctfd", "jeopardy"]
+authors = [
+    { name = "Dayı Stego Solver" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Development Status :: 5 - Production/Stable",
+]
+
+# Core: zero mandatory external dependencies (pure stdlib).
+# Optional: aiohttp enables Tier-2 CTFd/Discord fallback without ctfshit.
+dependencies = []
+
+[project.optional-dependencies]
+integration = ["aiohttp>=3.9"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+dayi = "dayi.cli:main"
+
+[project.urls]
+Repository  = "https://github.com/your-org/dayi-stego-solver"
+"Bug Tracker" = "https://github.com/your-org/dayi-stego-solver/issues"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["dayi*"]
