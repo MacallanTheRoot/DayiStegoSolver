@@ -143,7 +143,7 @@ sudo dpkg -i stegseek_linux.deb
 
 ```bash
 # Clone it as a sibling directory — Dayı auto-detects it at runtime
-git clone https://github.com/MacallanTheRoot/ctfshit ctfshit/
+git clone https://github.com/MacallanTheRoot/ctfshitcli ctfshit/
 ```
 
 No config file. No env vars. If `ctfshit/src/*.py` is importable, it gets used.
@@ -441,7 +441,7 @@ sudo apt install -y tesseract-ocr
 **ctfshit (isteğe bağlı):**
 
 ```bash
-git clone https://github.com/MacallanTheRoot/ctfshit ctfshit/
+git clone https://github.com/MacallanTheRoot/ctfshitcli ctfshit/
 # Ayar yok. Dizinde varsa Dayı kullanır.
 ```
 
