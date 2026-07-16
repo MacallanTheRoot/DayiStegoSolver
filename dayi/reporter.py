@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from dayi.scanner import ArtifactFinding
+
 logger = logging.getLogger("dayi")
 
 
@@ -52,6 +54,7 @@ class ToolResult:
     skip_reason: str = ""
     extracted_dir: str | None = None
     extracted_flags: dict[str, list[str]] = field(default_factory=dict)
+    artifacts_found: list[ArtifactFinding] = field(default_factory=list)
 
 
 @dataclass
@@ -64,6 +67,7 @@ class ScanReport:
     finished_at: str
     all_flags: list[str]
     tool_results: list[ToolResult]
+    all_artifacts: list[ArtifactFinding] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +116,24 @@ def _build_flag_attribution(tool_results: list[ToolResult]) -> dict[str, list[st
     return attribution
 
 
+def _format_artifact(finding: ArtifactFinding) -> str:
+    """Render one bounded artifact preview for text-based reports."""
+    rendered = f"[{finding.artifact_type}] {finding.preview} ({finding.source})"
+    if finding.decoded_preview is not None:
+        rendered += f" → decoded: {finding.decoded_preview}"
+    return rendered
+
+
+def _artifact_to_dict(finding: ArtifactFinding) -> dict[str, str | None]:
+    """Serialize one artifact without exposing unbounded raw tool output."""
+    return {
+        "type": finding.artifact_type,
+        "preview": finding.preview,
+        "source": finding.source,
+        "decoded_preview": finding.decoded_preview,
+    }
+
+
 def _build_notes_text(report: ScanReport) -> str:
     """
     Build a structured notes.txt body from the ScanReport.
@@ -147,6 +169,12 @@ def _build_notes_text(report: ScanReport) -> str:
             lines.append(f"  → {flag}  ← bulan: [{', '.join(finders)}]")
         lines.append("")
 
+    if report.all_artifacts:
+        lines.append("SONRAKI AŞAMA OLABİLECEK ARTIFACT/IPUÇLARI:")
+        for finding in report.all_artifacts:
+            lines.append(f"  → {_format_artifact(finding)}")
+        lines.append("")
+
     lines.append("ARAÇ SONUÇLARI:")
     lines.append("")
 
@@ -160,6 +188,11 @@ def _build_notes_text(report: ScanReport) -> str:
 
         if tr.flags_found:
             lines.append(f"    Flagler: {', '.join(tr.flags_found)}")
+
+        if tr.artifacts_found:
+            lines.append("    Artifact/ipucu:")
+            for finding in tr.artifacts_found:
+                lines.append(f"      {_format_artifact(finding)}")
 
         if tr.stdout.strip():
             lines.append("    STDOUT (özet):")
@@ -230,6 +263,12 @@ def _fallback_markdown(report: ScanReport, output_path: Path) -> None:
         for flag in report.all_flags:
             finders = attribution.get(flag, ["?"])
             lines.append(f"- `{flag}` ← *{', '.join(finders)}* tarafından bulundu")
+        lines.append("")
+
+    if report.all_artifacts:
+        lines.append("#### Sonraki Aşama Olabilecek Artifact/İpuçları\n")
+        for finding in report.all_artifacts:
+            lines.append(f"- `{_format_artifact(finding)}`")
         lines.append("")
 
     lines += [
@@ -388,6 +427,11 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
     else:
         lines.append("😤  Hiçbir flag bulunamadı. Manuel inceleme önerilir.")
 
+    if report.all_artifacts:
+        lines += ["", "🔎  SONRAKİ AŞAMA OLABİLECEK ARTIFACT/IPUÇLARI:"]
+        for finding in report.all_artifacts:
+            lines.append(f"    → {_format_artifact(finding)}")
+
     lines += ["", separator, "  ARAÇ SONUÇLARI", separator, ""]
 
     for tr in report.tool_results:
@@ -408,6 +452,11 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
             lines.append("  Çıkarılan Dosyalardaki Flagler:")
             for fname, flags in tr.extracted_flags.items():
                 lines.append(f"    [{fname}]: {', '.join(flags)}")
+
+        if tr.artifacts_found:
+            lines.append("  Artifact/İpuçları:")
+            for finding in tr.artifacts_found:
+                lines.append(f"    {_format_artifact(finding)}")
 
         if tr.stdout.strip():
             lines.append("  STDOUT:")
@@ -454,6 +503,7 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
             "flags_found":     tr.flags_found,
             "extracted_dir":   tr.extracted_dir,
             "extracted_flags": tr.extracted_flags,
+            "artifacts_found": [_artifact_to_dict(item) for item in tr.artifacts_found],
             "stdout":          _truncate(tr.stdout),
             "stderr":          _truncate(tr.stderr),
         }
@@ -469,6 +519,7 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
         },
         "all_flags_found":  report.all_flags,
         "flag_attribution": attribution,
+        "artifacts_found":  [_artifact_to_dict(item) for item in report.all_artifacts],
         "tool_results":     [_tool_to_dict(tr) for tr in report.tool_results],
     }
 

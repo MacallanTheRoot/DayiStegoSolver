@@ -21,7 +21,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from dayi.reporter import ToolResult
 from dayi.scanner import scan_file
@@ -35,6 +35,7 @@ from dayi.tools._base import (
     make_skipped_result,
 )
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
+from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
 logger = logging.getLogger("dayi")
 
@@ -143,6 +144,7 @@ async def run_steghide_bruteforce(
     timeout_per_attempt: float = 10.0,
     max_concurrent: int = 8,
     bf_limit: int = 1000,
+    progress_callback: Callable[[int, int | None], None] | None = None,
 ) -> ToolResult:
     """
     Brute-force steghide extraction using a wordlist source.
@@ -164,6 +166,7 @@ async def run_steghide_bruteforce(
         max_concurrent:      Maximum simultaneous steghide processes.
         bf_limit:            Max passwords from wordlist_path (0 = unlimited).
                              Ignored when wordlist_data is provided.
+        progress_callback:   Optional dependency-free attempt counter callback.
 
     Returns:
         Populated ToolResult. Stops at first successful extraction.
@@ -210,6 +213,9 @@ async def run_steghide_bruteforce(
     found_password: str | None = None
     found_flags: list[str] = []
     total_tested = 0
+    progress_total = len(wordlist_data) if wordlist_data is not None else (
+        bf_limit or None
+    )
     start = time.monotonic()
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -242,6 +248,11 @@ async def run_steghide_bruteforce(
             tasks = [try_password(pw, tmpdir) for pw in batch]
             results = await asyncio.gather(*tasks)
             total_tested += len(batch)
+            if progress_callback is not None:
+                try:
+                    progress_callback(total_tested, progress_total)
+                except Exception as exc:
+                    logger.debug(f"[steghide_bf] Progress callback failed: {exc}")
             batch = []
 
             for success, flags, pw in results:
@@ -264,6 +275,11 @@ async def run_steghide_bruteforce(
             tasks = [try_password(pw, tmpdir) for pw in batch]
             results = await asyncio.gather(*tasks)
             total_tested += len(batch)
+            if progress_callback is not None:
+                try:
+                    progress_callback(total_tested, progress_total)
+                except Exception as exc:
+                    logger.debug(f"[steghide_bf] Progress callback failed: {exc}")
             for success, flags, pw in results:
                 if success:
                     found_password = pw
@@ -290,3 +306,56 @@ async def run_steghide_bruteforce(
         elapsed_seconds=elapsed,
         timed_out=False,
     )
+
+
+async def _plugin_run_empty(context: PluginContext) -> ToolResult:
+    return await run_steghide(context.target, context.flag_pattern, context.timeout)
+
+
+async def _plugin_run_mini(context: PluginContext) -> ToolResult:
+    return await run_steghide_bruteforce(
+        context.target,
+        context.flag_pattern,
+        wordlist_data=list(context.mini_wordlist),
+        timeout_per_attempt=5.0,
+        max_concurrent=context.bf_threads,
+        progress_callback=context.report_progress,
+    )
+
+
+async def _plugin_run_main(context: PluginContext) -> ToolResult:
+    return await run_steghide_bruteforce(
+        context.target,
+        context.flag_pattern,
+        wordlist_path=context.wordlist,
+        timeout_per_attempt=10.0,
+        max_concurrent=context.bf_threads,
+        bf_limit=context.bf_limit,
+        progress_callback=context.report_progress,
+    )
+
+
+PLUGIN_SPECS = (
+    ToolPlugin(
+        plugin_id="steghide_empty",
+        phase=PluginPhase.CONCURRENT,
+        priority=80,
+        run=_plugin_run_empty,
+    ),
+    ToolPlugin(
+        plugin_id="steghide_mini_bf",
+        phase=PluginPhase.MINI_BRUTE_FORCE,
+        priority=10,
+        run=_plugin_run_mini,
+        requires_mini_wordlist=True,
+    ),
+    ToolPlugin(
+        plugin_id="steghide_main_bf",
+        phase=PluginPhase.MAIN_FALLBACK,
+        priority=10,
+        run=_plugin_run_main,
+        requires_wordlist=True,
+        skip_if_phase_succeeded=(PluginPhase.MINI_BRUTE_FORCE,),
+        skip_if_plugins_succeeded=("stegseek_main",),
+    ),
+)

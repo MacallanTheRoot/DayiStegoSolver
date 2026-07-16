@@ -16,6 +16,12 @@ from dayi.reporter import ToolResult
 from dayi.scanner import scan_file
 from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
+from dayi.tools._plugin import (
+    PluginContext,
+    PluginPhase,
+    ToolPlugin,
+    extraction_or_exit_success,
+)
 
 logger = logging.getLogger("dayi")
 
@@ -93,3 +99,25 @@ async def run_stegseek(
             timed_out=timed_out,
             extracted_flags=extracted_flags,
         )
+
+
+async def _plugin_run(context: PluginContext) -> ToolResult:
+    timeout = context.timeout * 5 if context.wordlist else context.timeout
+    return await run_stegseek(
+        context.target,
+        context.flag_pattern,
+        context.wordlist,
+        timeout,
+    )
+
+
+PLUGIN_SPECS = (
+    ToolPlugin(
+        plugin_id="stegseek_main",
+        phase=PluginPhase.MAIN_PRIMARY,
+        priority=10,
+        run=_plugin_run,
+        skip_if_phase_succeeded=(PluginPhase.MINI_BRUTE_FORCE,),
+        success_evaluator=extraction_or_exit_success,
+    ),
+)

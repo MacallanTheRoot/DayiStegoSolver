@@ -23,6 +23,7 @@ from dayi.tools._base import (
     make_skipped_result,
 )
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
+from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
 logger = logging.getLogger("dayi")
 
@@ -91,3 +92,19 @@ async def run_zsteg(
         elapsed_seconds=elapsed,
         timed_out=timed_out,
     )
+
+
+async def _plugin_run(context: PluginContext) -> ToolResult:
+    return await run_zsteg(
+        context.target, context.flag_pattern, context.timeout * 2
+    )
+
+
+PLUGIN_SPECS = (
+    ToolPlugin(
+        plugin_id="zsteg",
+        phase=PluginPhase.CONCURRENT,
+        priority=50,
+        run=_plugin_run,
+    ),
+)

@@ -24,9 +24,25 @@
 
 ### What is Dayı?
 
-Throw a suspicious image at Dayı and walk away. It runs 8 tools in parallel, grabs every string of text from the output, matches your flag regex, and — if you configured it — pings CTFd and Discord before you've opened a second terminal.
+Throw a suspicious image at Dayı and walk away. It runs 9 plugin operations in parallel, grabs every string of text from the output, matches your flag regex, and — if you configured it — pings CTFd and Discord before you've opened a second terminal.
 
 It logs at you like a wise, sarcastic Turkish uncle. The code itself is clean and boring, as it should be.
+
+---
+
+### 🆕 Latest upgrades
+
+| Upgrade | Current behavior |
+|---|---|
+| **Multi-stage artifact scanner** | Passively reports HTTP/HTTPS URLs, validated IP addresses, conservative domains, credential hints, decimal/DMS coordinates, and printable Base64 hints. It never fetches, resolves, or follows an artifact. |
+| **Intelligent mini-wordlist decoder** | Quietly adds printable Hex and strict Base64 decodings alongside their original tokens, with deterministic deduplication and bounded candidate limits. |
+| **ZIP carving and cracking** | `binwalk` explicitly carves raw ZIP bytes even when external extraction fails. Extensionless ZIPs are detected by content, then safely extracted or tried with the mini-wordlist before the streamed main wordlist. |
+| **Pure-Python chi-square analysis** | Reconstructs bounded PNG scanlines and uncompressed BMP pixels without Pillow/NumPy/SciPy, then reports an LSB Pair-of-Values uniformity heuristic. |
+| **Dynamic plugin registry** | Discovers validated `PLUGIN_SPECS` automatically, orders them by phase and priority, and skips malformed plugins without crashing the scan. |
+| **Optional Rich terminal UI** | Provides one coordinated live display, plugin status, progress, artifact panels, and flag tables when Rich and an interactive TTY are available. |
+| **Optional OCR plugin** | After archive handling, scans the target and extracted JPEG/PNG/BMP images for visible text and flags. Pillow, pytesseract, and the system Tesseract engine remain optional. |
+
+Security hardening also rejects noisy short-domain/IPv6 artifacts, ZIP path traversal, symlink escapes, oversized archive members, decompression bombs, oversized OCR inputs, and duplicate workspace images.
 
 ---
 
@@ -34,7 +50,14 @@ It logs at you like a wise, sarcastic Turkish uncle. The code itself is clean an
 
 | | Feature | What it actually does |
 |---|---|---|
-| ⚡ | **Concurrent execution** | `asyncio.gather()` fires all 8 tools at once. ~75% faster than the old sequential loop. |
+| ⚡ | **Concurrent execution** | `asyncio.gather()` fires all 9 concurrent plugin operations at once. ~75% faster than the old sequential loop. |
+| 🔌 | **Drop-in plugins** | Public modules under `dayi/tools/` self-register with `PLUGIN_SPECS`; the runner needs no edits. |
+| 🎨 | **Optional Rich UI** | `.[ui]` adds one coordinated live display, progress bars, warning panels, and flag tables; non-TTY and zero-dependency installs stay plain. |
+| 👁️ | **Optional OCR** | `.[ocr]` reads visible text from the target and images unpacked into the workspace; the core remains dependency-free. |
+| 🧭 | **Passive artifact detection** | Reports links, IPs, domains, credential hints, coordinates, and validated Base64 previews without network access. |
+| 🔐 | **Safe archive recovery** | Carves extensionless ZIPs, tries contextual passwords first, and enforces traversal and extraction-size limits. |
+| 🔓 | **Intelligent token decoding** | Adds printable Hex and strict Base64 decodings to the bounded contextual password pool. |
+| 📊 | **Chi-square LSB test** | Measures PNG/BMP Pair-of-Values distributions with a pure-stdlib p-value heuristic. |
 | 🧠 | **Smart routing** | Reads the first 16 bytes. JPEG → no zsteg. PNG → no steghide. No wasted forks. |
 | 🔔 | **Early notification** | Flag found by exiftool while binwalk is still running? CTFd gets it immediately. |
 | 🔍 | **Mini-wordlist BF** | Pulls candidate passwords from metadata output and tries them before touching rockyou. |
@@ -51,14 +74,14 @@ It logs at you like a wise, sarcastic Turkish uncle. The code itself is clean an
 
 ### 🗂️ Format → Tool Matrix
 
-| Format | Magic bytes | exiftool | exiv2 | strings | binwalk | zsteg | lsb_py | steghide | outguess | stegseek |
-|:------:|:-----------:|:--------:|:-----:|:-------:|:-------:|:-----:|:------:|:--------:|:--------:|:--------:|
-| **JPEG** | `FF D8 FF` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| **PNG** | `89 50 4E 47` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| **BMP** | `42 4D` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **WAV** | `52 49 46 46` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| **ZIP** | `50 4B 03 04` | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Unknown** | — | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Format | Magic bytes | exiftool | exiv2 | strings | binwalk | zsteg | lsb_py | chi_square | steghide | outguess | stegseek | ocr |
+|:------:|:-----------:|:--------:|:-----:|:-------:|:-------:|:-----:|:------:|:----------:|:--------:|:--------:|:--------:|:---:|
+| **JPEG** | `FF D8 FF` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **PNG** | `89 50 4E 47` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **BMP** | `42 4D` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **WAV** | `52 49 46 46` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| **ZIP** | `50 4B 03 04` | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Unknown** | — | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 > Routing is header-based. Rename a JPEG to `.png` — Dayı still knows what it is.
 
@@ -69,9 +92,12 @@ It logs at you like a wise, sarcastic Turkish uncle. The code itself is clean an
 | `exiftool` | External | EXIF/metadata dump | `sudo apt install libimage-exiftool-perl` |
 | `exiv2` | External | EXIF/IPTC/XMP metadata | `sudo apt install exiv2` |
 | `strings` | External | Printable string extraction | `sudo apt install binutils` |
-| `binwalk` | External | Embedded file extraction | `sudo apt install binwalk` |
+| `binwalk` | External | Embedded extraction + raw ZIP carving fallback | `sudo apt install binwalk` |
+| `zip_cracker` | **Built-in** | Safe extensionless/ZipCrypto recovery and recursive flag scan | nothing |
 | `zsteg` | External | PNG/BMP LSB analysis | `sudo gem install zsteg` |
 | `lsb_py` | **Built-in** | PNG/BMP LSB (pure Python, no Ruby needed) | nothing |
+| `chi_square` | **Built-in** | PNG/BMP PoV chi-square LSB heuristic | nothing |
+| `ocr_scanner` | Optional plugin | OCR on the target and extracted JPEG/PNG/BMP images | `pip install -e ".[ocr]"` + Tesseract |
 | `steghide` | External | JPEG/BMP/WAV steghide | `sudo apt install steghide` |
 | `outguess` | External | JPEG outguess | `sudo apt install outguess` |
 | `stegseek` | External | Native-speed steghide BF | [github.com/RickdeJager/stegseek](https://github.com/RickdeJager/stegseek) |
@@ -87,6 +113,12 @@ cd dayi-stego-solver
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
+# Rich spinner, progress bars, panels, and result tables (optional)
+pip install -e ".[ui]"
+
+# Visible-text OCR for target and extracted images (optional)
+pip install -e ".[ocr]"
+
 # Tier-2 Discord/CTFd fallback (if you're not using ctfshit)
 pip install -e ".[integration]"
 
@@ -98,6 +130,9 @@ dayi --help
 ```bash
 sudo apt install -y libimage-exiftool-perl exiv2 binutils binwalk steghide outguess
 sudo gem install zsteg
+
+# Required only when the optional OCR extra is used
+sudo apt install -y tesseract-ocr
 
 # stegseek — worth it, trust me
 wget https://github.com/RickdeJager/stegseek/releases/latest/download/stegseek_linux.deb
@@ -190,13 +225,20 @@ Write-up (v3.0):
 │  Phases 1–4  (asyncio.gather — all at once)      │
 │                                                  │
 │  exiftool  exiv2  strings  binwalk               │
-│  zsteg     lsb_py  steghide  outguess            │
+│  zsteg     lsb_py  chi_square                     │
+│  steghide  outguess                               │
 │                                                  │
 │  → flag found mid-gather? notify() fires now.    │
 └──────────────────────────────────────────────────┘
                        ↓
 ┌──────────────────────────────────────────────────┐
-│  Phase 4.5 — Mini-wordlist BF                    │
+│  Phase 4.5 — Archive post-processing             │
+│  ZIP: mini-list → streamed main list → safe scan │
+│  OCR: target + extracted images (when installed) │
+└──────────────────────────────────────────────────┘
+                       ↓
+┌──────────────────────────────────────────────────┐
+│  Phase 4.6 — Mini-wordlist BF                    │
 │  Pulls tokens from phases 1+2 output             │
 │  → Tries them against steghide + outguess        │
 │  → If it works, skips Phase 5 entirely           │
@@ -248,17 +290,21 @@ export_markdown_writeup(report, Path("writeup.md"))
 DayiStegoSolver/
 ├── dayi/
 │   ├── cli.py              # argparse entry point
-│   ├── runner.py           # asyncio.gather orchestrator, 5 phases
+│   ├── runner.py           # generic phase-aware plugin orchestrator
 │   ├── scanner.py          # regex flag scanner
 │   ├── reporter.py         # TXT + JSON + Markdown writeup
 │   ├── persona.py          # Dayı voice, colors, banners
 │   ├── integrations.py     # CTFd/Discord fire-and-forget
 │   └── tools/
 │       ├── _base.py        # subprocess wrapper, SIGTERM/SIGKILL, sanitizer
+│       ├── _plugin.py      # plugin contract, validation, dynamic discovery
 │       ├── lsb.py          # pure-Python PNG/BMP LSB (no zsteg dependency)
+│       ├── chi_square.py   # bounded PNG/BMP PoV statistical analyzer
+│       ├── ocr_scanner.py  # optional OCR for target and workspace images
+│       ├── zip_cracker.py  # safe stdlib ZipCrypto cracking
 │       ├── steghide.py     # empty-pass + streaming BF
 │       ├── outguess.py     # empty-pass + streaming BF
-│       ├── binwalk.py      # extraction + recursive dir scan
+│       ├── binwalk.py      # extraction + protected-ZIP carving fallback
 │       └── …               # exiftool, exiv2, strings, zsteg, stegseek
 ├── ctfshit/                # optional — drop here, auto-detected
 ├── pyproject.toml
@@ -285,9 +331,10 @@ dayi --help
 PRs welcome. A few rules:
 
 1. New tool? Copy `dayi/tools/exiftool.py` as a template.
-2. Add a format guard with `get_file_type()` + `make_skipped_result()` — no guard, no merge.
-3. Add it to `tools/__init__.py` and `runner.py`'s `concurrent_coros` list.
-4. Code/comments/docstrings → English. `logger.info()` messages → Turkish, Dayı tone.
+2. Export a non-empty `PLUGIN_SPECS` tuple containing validated `ToolPlugin` operations. The registry discovers public modules automatically; `runner.py` changes are not needed.
+3. Choose the correct `PluginPhase`, priority, requirements, and skip dependencies. Add a format guard with `get_file_type()` + `make_skipped_result()` where applicable.
+4. Treat drop-in plugins as trusted local code: discovery imports each public module. Malformed plugins are skipped with a warning.
+5. Code/comments/docstrings → English. `logger.info()` messages → Turkish, Dayı tone.
 
 ---
 
@@ -313,9 +360,25 @@ MIT — do whatever you want with it.
 
 ### Dayı Nedir?
 
-Şüpheli görseli Dayı'ya ver, geri adım at. 8 aracı aynı anda çalıştırır, çıktıları regex'le tarar, flag bulursa — eğer yapılandırdıysan — ikinci terminali açmadan CTFd'ye ve Discord'a haber uçurur.
+Şüpheli görseli Dayı'ya ver, geri adım at. 9 aracı aynı anda çalıştırır, çıktıları regex'le tarar, flag bulursa — eğer yapılandırdıysan — ikinci terminali açmadan CTFd'ye ve Discord'a haber uçurur.
 
 Seninle bilge, nükteli bir Türk dayısı ağzıyla konuşur. Kodun kendisi sıkıcı derecede temiz.
+
+---
+
+### 🆕 Son yükseltmeler
+
+| Yükseltme | Güncel davranış |
+|---|---|
+| **Çok aşamalı artifact tarayıcı** | HTTP/HTTPS bağlantılarını, doğrulanmış IP adreslerini, temkinli domain eşleşmelerini, kimlik bilgisi ipuçlarını, decimal/DMS koordinatlarını ve yazdırılabilir Base64 ipuçlarını pasif biçimde raporlar. Hiçbir bağlantıyı çekmez, çözümlemez veya takip etmez. |
+| **Akıllı mini-wordlist decoder** | Yazdırılabilir Hex ve katı Base64 çözümlerini özgün token'larla birlikte sessizce ekler; adayları deterministik biçimde tekilleştirir ve sınırlar. |
+| **ZIP carving ve şifre çözme** | Harici çıkarma başarısız olsa bile `binwalk` ham ZIP baytlarını ayrıca carve eder. Uzantısız ZIP'ler içerikten tanınır; önce mini-wordlist, sonra stream edilen ana wordlist denenir. |
+| **Saf Python chi-square analizi** | Pillow/NumPy/SciPy olmadan sınırlandırılmış PNG scanline'larını ve sıkıştırılmamış BMP piksellerini çözer; LSB Pair-of-Values uniformity heuristic'ini raporlar. |
+| **Dinamik eklenti registry'si** | `PLUGIN_SPECS` tanımlarını otomatik keşfeder, faz ve önceliğe göre sıralar; bozuk eklentileri taramayı çökertmeden atlar. |
+| **İsteğe bağlı Rich terminal UI** | Rich ve interaktif TTY varsa tek bir canlı ekran üzerinden eklenti durumu, ilerleme, artifact panelleri ve flag tabloları gösterir. |
+| **İsteğe bağlı OCR eklentisi** | Arşiv işlemlerinden sonra hedefi ve çıkarılan JPEG/PNG/BMP görsellerini görünür yazı ve flag için tarar. Pillow, pytesseract ve sistem Tesseract motoru isteğe bağlı kalır. |
+
+Güvenlik sıkılaştırmaları; kısa domain/IPv6 gürültüsünü, ZIP path traversal girişimlerini, symlink kaçışlarını, aşırı büyük arşiv üyelerini, decompression bomb'larını, büyük OCR girdilerini ve yinelenen çalışma alanı görsellerini de engeller.
 
 ---
 
@@ -323,10 +386,17 @@ Seninle bilge, nükteli bir Türk dayısı ağzıyla konuşur. Kodun kendisi sı
 
 | | Özellik | Ne yapar |
 |---|---|---|
-| ⚡ | **Eşzamanlı çalışma** | `asyncio.gather()` ile 8 araç aynı anda. Eski sıralı yapıya göre ~%75 hız kazancı. |
+| ⚡ | **Eşzamanlı çalışma** | `asyncio.gather()` ile 9 araç aynı anda. Eski sıralı yapıya göre ~%75 hız kazancı. |
+| 🔌 | **Drop-in eklentiler** | `dayi/tools/` altındaki açık modüller `PLUGIN_SPECS` ile kendini kaydeder; runner değişmez. |
+| 🎨 | **İsteğe bağlı Rich UI** | `.[ui]` tek bir canlı ekran, ilerleme çubukları, uyarı panelleri ve flag tabloları ekler; TTY dışı ve sıfır-bağımlılık kurulumu düz kalır. |
+| 👁️ | **İsteğe bağlı OCR** | `.[ocr]` hedefteki ve çalışma alanına çıkarılmış görsellerdeki görünür yazıları okur; çekirdek bağımlılıksız kalır. |
+| 🧭 | **Pasif artifact tespiti** | Bağlantı, IP, domain, kimlik bilgisi ipucu, koordinat ve doğrulanmış Base64 önizlemelerini ağa çıkmadan raporlar. |
+| 🔐 | **Güvenli arşiv kurtarma** | Uzantısız ZIP'leri carve eder, önce bağlamsal şifreleri dener; traversal ve çıkarma boyutu sınırlarını uygular. |
+| 🔓 | **Akıllı token çözme** | Yazdırılabilir Hex ve katı Base64 çözümlerini sınırlandırılmış bağlamsal şifre havuzuna ekler. |
 | 🧠 | **Akıllı yönlendirme** | İlk 16 byte'ı okur. JPEG → zsteg yok. PNG → steghide yok. Boşuna fork yok. |
 | 🔔 | **Erken bildirim** | exiftool flag buldu, binwalk hâlâ çalışıyor? CTFd anında haberdar olur. |
 | 🔍 | **Mini-wordlist BF** | Metadata çıktısından aday şifreler toplar, rockyou'ya girmeden önce dener. |
+| 📊 | **Chi-square LSB testi** | PNG/BMP renk kanallarında PoV dağılımını ölçer; p-value tabanlı skor bir heuristic'tir, kesin stego kanıtı değildir. |
 | 📝 | **Otomatik write-up** | Markdown çözüm belgesi üretir. ctfshit varsa onun exporter'ını kullanır, yoksa kendisi yapar. |
 | 🧹 | **Zombie-safe subprocess** | SIGTERM → 2s → SIGKILL → `wait_for(5s)`. Takılı process bırakmaz. |
 | 🔒 | **OOM koruması** | rockyou.txt satır satır stream edilir. 134MB RAM'e hiç yüklenmez. |
@@ -347,6 +417,12 @@ cd dayi-stego-solver
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
+# Rich spinner, progress bar, panel ve sonuç tabloları (isteğe bağlı)
+pip install -e ".[ui]"
+
+# Hedef ve çıkarılmış görsellerde görünür yazı OCR'ı (isteğe bağlı)
+pip install -e ".[ocr]"
+
 # CTFd/Discord fallback için (ctfshit olmadan)
 pip install -e ".[integration]"
 ```
@@ -356,6 +432,9 @@ pip install -e ".[integration]"
 ```bash
 sudo apt install -y libimage-exiftool-perl exiv2 binutils binwalk steghide outguess
 sudo gem install zsteg
+
+# Yalnızca isteğe bağlı OCR extra'sı kullanılırken gerekir
+sudo apt install -y tesseract-ocr
 # stegseek: https://github.com/RickdeJager/stegseek/releases
 ```
 
@@ -407,10 +486,15 @@ dayi challenge.jpg \
 ```
 Faz 1–4 (asyncio.gather — hepsi aynı anda):
   exiftool  exiv2  strings  binwalk
-  zsteg     lsb_py  steghide  outguess
+  zsteg     lsb_py  chi_square
+  steghide_empty    outguess_empty
   → Flag bulunur bulunmaz notify() tetiklenir.
 
-Faz 4.5 — Mini-wordlist BF:
+Faz 4.5 — Arşiv son işlemleri:
+  ZIP: mini-wordlist → stream edilen ana wordlist → güvenli tarama
+  OCR: hedef + çıkarılmış görseller (kuruluysa)
+
+Faz 4.6 — Mini-wordlist BF:
   Metadata çıktısından token topla → steghide/outguess'e ver
   → Şifre bulunursa Faz 5 atlanır.
 
@@ -452,9 +536,10 @@ dayi stego.png --flag "CTF{.*?}" --writeup cozum.md
 PR'lar bekliyorum. Kurallar basit:
 
 1. Yeni araç → `dayi/tools/exiftool.py`'yi template al.
-2. `get_file_type()` ile format kontrolü ekle. Yoksa merge yok.
-3. `tools/__init__.py` ve `runner.py`'deki `concurrent_coros` listesine ekle.
-4. Kod/yorum → İngilizce. `logger.info()` mesajları → Türkçe, Dayı tonu.
+2. Doğrulanabilir `ToolPlugin` işlemlerinden oluşan boş olmayan bir `PLUGIN_SPECS` tuple'ı dışa aktar. Registry modülü otomatik keşfeder; `runner.py` değişmez.
+3. Doğru `PluginPhase`, öncelik, gereksinim ve atlama bağımlılıklarını seç. Uygun araçlarda `get_file_type()` ile format kontrolü ekle.
+4. Drop-in eklentileri güvenilir yerel kod kabul et: keşif sırasında modüller import edilir. Bozuk eklenti uyarıyla atlanır.
+5. Kod/yorum → İngilizce. `logger.info()` mesajları → Türkçe, Dayı tonu.
 
 ---
 

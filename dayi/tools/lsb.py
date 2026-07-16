@@ -23,6 +23,7 @@ from dayi.tools._base import (
     get_file_type,
     make_skipped_result,
 )
+from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
 logger = logging.getLogger("dayi")
 
@@ -343,3 +344,17 @@ async def run_lsb(
         elapsed_seconds=0.0,
         timed_out=False,
     )
+
+
+async def _plugin_run(context: PluginContext) -> ToolResult:
+    return await run_lsb(context.target, context.flag_pattern, context.timeout)
+
+
+PLUGIN_SPECS = (
+    ToolPlugin(
+        plugin_id="lsb_py",
+        phase=PluginPhase.CONCURRENT,
+        priority=60,
+        run=_plugin_run,
+    ),
+)

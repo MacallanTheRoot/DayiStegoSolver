@@ -10,6 +10,7 @@ from pathlib import Path
 from dayi.reporter import ToolResult
 from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES, TOOL_TIMEOUT_MESSAGES
+from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
 logger = logging.getLogger("dayi")
 
@@ -58,3 +59,18 @@ async def run_exiftool(
         elapsed_seconds=elapsed,
         timed_out=timed_out,
     )
+
+
+async def _plugin_run(context: PluginContext) -> ToolResult:
+    return await run_exiftool(context.target, context.flag_pattern, context.timeout)
+
+
+PLUGIN_SPECS = (
+    ToolPlugin(
+        plugin_id="exiftool",
+        phase=PluginPhase.CONCURRENT,
+        priority=10,
+        run=_plugin_run,
+        contributes_to_mini_wordlist=True,
+    ),
+)
