@@ -32,6 +32,11 @@ from pathlib import Path
 
 from dayi import __version__
 from dayi.doctor import doctor_exit_code, render_json, render_plain, run_diagnostics
+from dayi.plugin_inspector import (
+    inspect_plugins,
+    render_json as render_plugins_json,
+    render_plain as render_plugins_plain,
+)
 from dayi.persona import BANNER, setup_logger
 from dayi.scanner import build_flag_pattern_config
 from dayi.runner import (
@@ -274,6 +279,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Tanı sonucunu kararlı JSON olarak stdout'a yaz",
     )
     doctor_parser.set_defaults(command="doctor")
+    plugins_parser = subparsers.add_parser(
+        "plugins",
+        help="Dinamik eklenti registry'sini güvenli biçimde incele",
+        description=(
+            "Paket içindeki güvenilir eklenti tanımlarını keşfet; runner veya "
+            "harici araç çalıştırmadan kayıt ve uygunluk durumunu göster."
+        ),
+    )
+    plugin_actions = plugins_parser.add_subparsers(
+        dest="plugins_action",
+        metavar="ACTION",
+        required=True,
+    )
+    plugins_list_parser = plugin_actions.add_parser(
+        "list",
+        help="Kayıtlı eklentileri ve keşif sorunlarını listele",
+    )
+    plugins_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Eklenti listesini kararlı JSON olarak stdout'a yaz",
+    )
+    plugins_list_parser.set_defaults(command="plugins", plugins_action="list")
     return parser
 
 
@@ -284,7 +313,7 @@ def normalize_cli_argv(argv: list[str]) -> list[str]:
         return ["scan"]
     if tokens[0] in {"-h", "--help", "--version"}:
         return tokens
-    if tokens[0] in {"scan", "doctor"}:
+    if tokens[0] in {"scan", "doctor", "plugins"}:
         return tokens
     return ["scan", *tokens]
 
@@ -465,6 +494,23 @@ def main() -> None:
         rendered = render_json(report) if args.json_output else render_plain(report)
         print(rendered)
         sys.exit(doctor_exit_code(report))
+
+    if args.command == "plugins":
+        try:
+            report = inspect_plugins()
+        except Exception as exc:
+            print(
+                f"[✗] Yeğenim eklenti registry'si incelenemedi: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        rendered = (
+            render_plugins_json(report)
+            if args.json_output
+            else render_plugins_plain(report)
+        )
+        print(rendered)
+        sys.exit(0)
 
     try:
         exit_code = asyncio.run(async_main(args))

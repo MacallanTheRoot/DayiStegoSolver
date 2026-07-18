@@ -230,6 +230,21 @@ dayi doctor --json
 Doctor makes no network requests. Missing external tools or optional Python
 modules produce a degraded report but still exit `0` while the core is usable.
 
+Inspect the real dynamic registry without running a scan:
+
+```bash
+dayi plugins list
+dayi plugins list --json
+```
+
+`available` means declared static runtime dependencies are present;
+`unavailable` means a declared executable or Python module is missing;
+`conditional` means scan-time input or phase/plugin outcomes are required.
+Listing imports only trusted modules shipped inside `dayi.tools`. It never loads
+arbitrary plugin directories, executes plugin runners or external binaries, or
+uses the network. Discovery issues and missing optional tools remain reportable
+with exit code `0`; JSON output is suitable for scripts and CI.
+
 **Full pipeline — everything at once:**
 
 ```bash
@@ -411,7 +426,7 @@ PRs welcome. A few rules:
 
 1. New tool? Copy `dayi/tools/exiftool.py` as a template.
 2. Export a non-empty `PLUGIN_SPECS` tuple containing validated `ToolPlugin` operations. The registry discovers public modules automatically; `runner.py` changes are not needed.
-3. Choose the correct `PluginPhase`, priority, requirements, and skip dependencies. Add a format guard with `get_file_type()` + `make_skipped_result()` where applicable.
+3. Choose the correct `PluginPhase`, priority, declared executable/Python requirements, and skip dependencies. Add a format guard with `get_file_type()` + `make_skipped_result()` where applicable.
 4. Treat drop-in plugins as trusted local code: discovery imports each public module. Malformed plugins are skipped with a warning.
 5. Code/comments/docstrings → English. `logger.info()` messages → Turkish, Dayı tone.
 
@@ -599,6 +614,21 @@ Doctor ağ isteği yapmaz. Eksik harici araçlar veya isteğe bağlı Python
 modülleri çekirdek kullanılabildiği sürece degraded sonuç verir ve `0` ile
 çıkar.
 
+Gerçek dinamik registry'yi tarama çalıştırmadan inceleyin:
+
+```bash
+dayi plugins list
+dayi plugins list --json
+```
+
+`available`, bildirilen statik runtime bağımlılıklarının hazır olduğunu;
+`unavailable`, bildirilen executable veya Python modülünün eksik olduğunu;
+`conditional` ise tarama girdisi ya da faz/eklenti sonucunun gerektiğini
+gösterir. Listeleme yalnızca `dayi.tools` içindeki güvenilir paket modüllerini
+import eder; rastgele eklenti dizini yüklemez, runner veya harici binary
+çalıştırmaz ve ağa çıkmaz. Keşif sorunları ile isteğe bağlı araç eksikleri çıkış
+kodu `0` ile raporlanabilir; JSON çıktısı script ve CI kullanımı içindir.
+
 **Tam pipeline:**
 
 ```bash
@@ -684,7 +714,7 @@ PR'lar bekliyorum. Kurallar basit:
 
 1. Yeni araç → `dayi/tools/exiftool.py`'yi template al.
 2. Doğrulanabilir `ToolPlugin` işlemlerinden oluşan boş olmayan bir `PLUGIN_SPECS` tuple'ı dışa aktar. Registry modülü otomatik keşfeder; `runner.py` değişmez.
-3. Doğru `PluginPhase`, öncelik, gereksinim ve atlama bağımlılıklarını seç. Uygun araçlarda `get_file_type()` ile format kontrolü ekle.
+3. Doğru `PluginPhase`, öncelik, bildirilen executable/Python gereksinimleri ve atlama bağımlılıklarını seç. Uygun araçlarda `get_file_type()` ile format kontrolü ekle.
 4. Drop-in eklentileri güvenilir yerel kod kabul et: keşif sırasında modüller import edilir. Bozuk eklenti uyarıyla atlanır.
 5. Kod/yorum → İngilizce. `logger.info()` mesajları → Türkçe, Dayı tonu.
 

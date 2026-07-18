@@ -340,6 +340,7 @@ PLUGIN_SPECS = (
         phase=PluginPhase.CONCURRENT,
         priority=90,
         run=_plugin_run_empty,
+        required_executables=(BINARY,),
     ),
     ToolPlugin(
         plugin_id="outguess_mini_bf",
@@ -348,6 +349,7 @@ PLUGIN_SPECS = (
         run=_plugin_run_mini,
         requires_mini_wordlist=True,
         success_evaluator=extraction_evidence_success,
+        required_executables=(BINARY,),
     ),
     ToolPlugin(
         plugin_id="outguess_main_bf",
@@ -357,5 +359,6 @@ PLUGIN_SPECS = (
         requires_wordlist=True,
         skip_if_phase_succeeded=(PluginPhase.MINI_BRUTE_FORCE,),
         success_evaluator=extraction_evidence_success,
+        required_executables=(BINARY,),
     ),
 )

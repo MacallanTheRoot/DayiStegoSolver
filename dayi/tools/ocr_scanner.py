@@ -323,5 +323,7 @@ PLUGIN_SPECS = (
         phase=PluginPhase.ARCHIVE,
         priority=20,
         run=_plugin_run,
+        required_executables=("tesseract",),
+        required_python_modules=("PIL", "pytesseract"),
     ),
 )

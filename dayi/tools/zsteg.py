@@ -106,5 +106,6 @@ PLUGIN_SPECS = (
         phase=PluginPhase.CONCURRENT,
         priority=50,
         run=_plugin_run,
+        required_executables=(BINARY,),
     ),
 )

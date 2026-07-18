@@ -134,6 +134,8 @@ class ToolPlugin:
     skip_if_phase_succeeded: tuple[PluginPhase, ...] = ()
     skip_if_plugins_succeeded: tuple[str, ...] = ()
     success_evaluator: SuccessEvaluator = flags_found_success
+    required_executables: tuple[str, ...] = ()
+    required_python_modules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,25 @@ class PluginRegistry:
             (plugin for plugin in self.plugins if plugin.plugin_id == plugin_id),
             None,
         )
+
+
+@dataclass(frozen=True)
+class PluginDiscoveryIssue:
+    """Stable diagnostics for one plugin discovery or validation problem."""
+
+    module: str | None
+    plugin_id: str | None
+    code: str
+    message: str
+    severity: str = "warning"
+
+
+@dataclass(frozen=True)
+class PluginDiscoveryResult:
+    """A registry plus structured issues retained during discovery."""
+
+    registry: PluginRegistry
+    issues: tuple[PluginDiscoveryIssue, ...]
 
 
 class PluginValidationError(ValueError):
@@ -198,6 +219,15 @@ def _validate_plugin(plugin: ToolPlugin) -> None:
             raise PluginValidationError(
                 f"{field_name} must be boolean: {plugin.plugin_id!r}"
             )
+    for field_name in ("required_executables", "required_python_modules"):
+        value = getattr(plugin, field_name)
+        if not isinstance(value, tuple) or any(
+            not isinstance(requirement, str) or not requirement
+            for requirement in value
+        ):
+            raise PluginValidationError(
+                f"{field_name} must contain non-empty strings: {plugin.plugin_id!r}"
+            )
 
 
 def _warn_broken_plugin(module_name: str, detail: str) -> None:
@@ -207,10 +237,13 @@ def _warn_broken_plugin(module_name: str, detail: str) -> None:
     )
 
 
-def discover_plugins(package_name: str = "dayi.tools") -> PluginRegistry:
-    """Import and validate every public module in a tool package."""
+def discover_plugins_with_issues(
+    package_name: str = "dayi.tools",
+) -> PluginDiscoveryResult:
+    """Import plugins and retain structured diagnostics without changing scans."""
     importlib.invalidate_caches()
-    issues: list[str] = []
+    legacy_issues: list[str] = []
+    issues: list[PluginDiscoveryIssue] = []
     candidates: dict[str, tuple[ToolPlugin, str]] = {}
 
     try:
@@ -218,13 +251,19 @@ def discover_plugins(package_name: str = "dayi.tools") -> PluginRegistry:
     except Exception as exc:
         detail = f"cannot import package: {exc}"
         _warn_broken_plugin(package_name, detail)
-        return PluginRegistry((), (detail,))
+        issue = PluginDiscoveryIssue(
+            package_name, None, "package-import-error", detail
+        )
+        return PluginDiscoveryResult(PluginRegistry((), (detail,)), (issue,))
 
     package_path = getattr(package, "__path__", None)
     if package_path is None:
         detail = "plugin package has no __path__"
         _warn_broken_plugin(package_name, detail)
-        return PluginRegistry((), (detail,))
+        issue = PluginDiscoveryIssue(
+            package_name, None, "invalid-plugin-package", detail
+        )
+        return PluginDiscoveryResult(PluginRegistry((), (detail,)), (issue,))
 
     module_names = sorted(
         module_info.name
@@ -238,21 +277,55 @@ def discover_plugins(package_name: str = "dayi.tools") -> PluginRegistry:
         short_name = module_name.rsplit(".", 1)[-1]
         try:
             module = importlib.import_module(module_name)
+        except Exception as exc:
+            detail = str(exc)
+            legacy_issues.append(f"{module_name}: {detail}")
+            issues.append(
+                PluginDiscoveryIssue(
+                    module_name, None, "module-import-error", detail
+                )
+            )
+            _warn_broken_plugin(short_name, detail)
+            continue
+
+        current_plugin_id: str | None = None
+        try:
             specs = getattr(module, "PLUGIN_SPECS")
             if not isinstance(specs, tuple) or not specs:
                 raise PluginValidationError("PLUGIN_SPECS must be a non-empty tuple")
             for plugin in specs:
+                current_plugin_id = getattr(plugin, "plugin_id", None)
                 _validate_plugin(plugin)
-            duplicate_ids = [
-                plugin.plugin_id for plugin in specs if plugin.plugin_id in candidates
-            ]
-            if duplicate_ids:
-                raise PluginValidationError(
-                    f"duplicate plugin IDs: {', '.join(sorted(duplicate_ids))}"
-                )
         except Exception as exc:
             detail = str(exc)
-            issues.append(f"{module_name}: {detail}")
+            code = (
+                "invalid-runner"
+                if detail.startswith("run adapter must be async")
+                else "invalid-plugin-spec"
+            )
+            legacy_issues.append(f"{module_name}: {detail}")
+            issues.append(
+                PluginDiscoveryIssue(
+                    module_name, current_plugin_id, code, detail
+                )
+            )
+            _warn_broken_plugin(short_name, detail)
+            continue
+
+        duplicate_ids = sorted(
+            plugin.plugin_id for plugin in specs if plugin.plugin_id in candidates
+        )
+        if duplicate_ids:
+            detail = f"duplicate plugin IDs: {', '.join(duplicate_ids)}"
+            legacy_issues.append(f"{module_name}: {detail}")
+            issues.append(
+                PluginDiscoveryIssue(
+                    module_name,
+                    duplicate_ids[0] if len(duplicate_ids) == 1 else None,
+                    "duplicate-plugin-id",
+                    detail,
+                )
+            )
             _warn_broken_plugin(short_name, detail)
             continue
 
@@ -261,6 +334,7 @@ def discover_plugins(package_name: str = "dayi.tools") -> PluginRegistry:
 
     # Remove specifications with unresolved result dependencies. Repeat so a
     # dependency on a removed plugin is also rejected deterministically.
+    original_ids = set(candidates)
     while True:
         known_ids = set(candidates)
         invalid = [
@@ -280,7 +354,17 @@ def discover_plugins(package_name: str = "dayi.tools") -> PluginRegistry:
                 if dependency not in known_ids
             )
             detail = f"unknown plugin dependencies: {', '.join(missing)}"
-            issues.append(f"{module_name}.{plugin.plugin_id}: {detail}")
+            code = (
+                "unresolved-dependency"
+                if any(dependency not in original_ids for dependency in missing)
+                else "dependency-pruned"
+            )
+            legacy_issues.append(f"{module_name}.{plugin.plugin_id}: {detail}")
+            issues.append(
+                PluginDiscoveryIssue(
+                    module_name, plugin.plugin_id, code, detail
+                )
+            )
             _warn_broken_plugin(module_name, detail)
             candidates.pop(plugin_id, None)
 
@@ -294,4 +378,10 @@ def discover_plugins(package_name: str = "dayi.tools") -> PluginRegistry:
             ),
         )
     )
-    return PluginRegistry(ordered, tuple(issues))
+    registry = PluginRegistry(ordered, tuple(legacy_issues))
+    return PluginDiscoveryResult(registry, tuple(issues))
+
+
+def discover_plugins(package_name: str = "dayi.tools") -> PluginRegistry:
+    """Import and validate every public module in a tool package."""
+    return discover_plugins_with_issues(package_name).registry

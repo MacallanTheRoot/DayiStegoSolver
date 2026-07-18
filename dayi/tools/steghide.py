@@ -350,6 +350,7 @@ PLUGIN_SPECS = (
         phase=PluginPhase.CONCURRENT,
         priority=80,
         run=_plugin_run_empty,
+        required_executables=(BINARY,),
     ),
     ToolPlugin(
         plugin_id="steghide_mini_bf",
@@ -358,6 +359,7 @@ PLUGIN_SPECS = (
         run=_plugin_run_mini,
         requires_mini_wordlist=True,
         success_evaluator=extraction_evidence_success,
+        required_executables=(BINARY,),
     ),
     ToolPlugin(
         plugin_id="steghide_main_bf",
@@ -368,5 +370,6 @@ PLUGIN_SPECS = (
         skip_if_phase_succeeded=(PluginPhase.MINI_BRUTE_FORCE,),
         skip_if_plugins_succeeded=("stegseek_main",),
         success_evaluator=extraction_evidence_success,
+        required_executables=(BINARY,),
     ),
 )

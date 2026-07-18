@@ -75,5 +75,6 @@ PLUGIN_SPECS = (
         priority=30,
         run=_plugin_run,
         contributes_to_mini_wordlist=True,
+        required_executables=(BINARY,),
     ),
 )

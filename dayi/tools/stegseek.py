@@ -122,5 +122,6 @@ PLUGIN_SPECS = (
         run=_plugin_run,
         skip_if_phase_succeeded=(PluginPhase.MINI_BRUTE_FORCE,),
         success_evaluator=extraction_evidence_success,
+        required_executables=(BINARY,),
     ),
 )
