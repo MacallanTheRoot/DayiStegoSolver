@@ -13,6 +13,10 @@
 
 **English** | [Türkçe](#-türkçe-dokümantasyon)
 
+> **Release status:** Version 3.0.0 is prepared but has not yet been tagged or
+> published as a GitHub release. See the [changelog](CHANGELOG.md) and
+> [release notes](RELEASE_NOTES_v3.0.0.md).
+
 > Developed with ☕ and CTF tears by [MacallanTheRoot](https://github.com/MacallanTheRoot)
 
 > *"Dayı"* means Uncle in Turkish — the kind who knows how everything works, fixes things without asking twice, and never panics under pressure. Give him a stego challenge. He'll sort it.
@@ -131,6 +135,8 @@ All four modules skip cleanly when their optional runtime is absent; the default
 ---
 
 ### 📦 Installation
+
+For users with access to the repository:
 
 ```bash
 git clone https://github.com/MacallanTheRoot/testrepo.git
@@ -524,6 +530,8 @@ Dört modül de isteğe bağlı runtime bulunmadığında temizce atlanır; vars
 ---
 
 ### 📦 Kurulum
+
+Depoya erişimi olan kullanıcılar için:
 
 ```bash
 git clone https://github.com/MacallanTheRoot/testrepo.git

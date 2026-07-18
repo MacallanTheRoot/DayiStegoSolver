@@ -32,9 +32,12 @@ WHEEL_REQUIRED = {
     "dayi/tools/_plugin.py",
 }
 SDIST_REQUIRED = {
+    "CHANGELOG.md",
     "LICENSE",
     "MANIFEST.in",
     "README.md",
+    "RELEASE_CHECKLIST.md",
+    "RELEASE_NOTES_v3.0.0.md",
     "pyproject.toml",
     "scripts/check.sh",
     "scripts/validate_distribution.py",
