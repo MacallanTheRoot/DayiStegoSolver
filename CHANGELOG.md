@@ -4,12 +4,13 @@ All notable changes to Dayı Stego Solver are documented here.
 
 ## [Unreleased]
 
-Changes made after the planned 3.0.0 release will be documented here.
+Changes made after the 4.0.0 release will be documented here.
 
-## [3.0.0] - Unreleased
+## [4.0.0] - 2026-07-18
 
-Version 3.0.0 is prepared for a future tag and GitHub release. No release date
-has been assigned.
+Version 4.0.0 is prepared for its production tag and GitHub release on
+2026-07-18. This release follows the earlier v3-era production history and
+brings the fully audited maintenance line into the production repository.
 
 ### Added
 
@@ -33,7 +34,7 @@ has been assigned.
 - Moved default per-scan workspaces from the current directory to operating
   system temporary storage.
 - Corrected the distribution identity, author, repository URLs, and runtime
-  version consistency while retaining version 3.0.0.
+  version consistency while setting the production release to version 4.0.0.
 - Changed the development classifier from Production/Stable to Beta.
 - Modernized MIT license metadata and included the license in distributions.
 - Made executable and Python-module plugin requirements declarative.
@@ -71,6 +72,6 @@ has been assigned.
 These measures reduce exposure to hostile CTF inputs; they are not a guarantee
 that every file, parser, optional dependency, or external executable is safe.
 
-<!-- The v3.0.0 tag does not exist yet; these are intended future release links. -->
-[Unreleased]: https://github.com/MacallanTheRoot/testrepo/compare/v3.0.0...HEAD
-[3.0.0]: https://github.com/MacallanTheRoot/testrepo/releases/tag/v3.0.0
+<!-- The v4.0.0 links become active when the production tag is published. -->
+[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.0.0

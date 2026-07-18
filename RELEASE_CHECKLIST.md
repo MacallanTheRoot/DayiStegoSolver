@@ -1,7 +1,8 @@
-# Dayı Stego Solver 3.0.0 Release Checklist
+# Dayı Stego Solver 4.0.0 Release Checklist
 
-This checklist prepares a future release. It does not record a completed tag,
-GitHub release, or package publication.
+This checklist prepares the 2026-07-18 release. Until the final release-status
+commit is made, it does not record a completed tag, GitHub release, or package
+publication.
 
 ## Pre-release
 
@@ -11,16 +12,15 @@ GitHub release, or package publication.
 - [ ] Confirm every required GitHub Actions job, including Python 3.10–3.13,
       completed successfully for the intended release commit.
 - [ ] Confirm `pyproject.toml`, `dayi.__version__`, CLI output, release notes,
-      changelog, and distribution metadata all report `3.0.0`.
+      changelog, and distribution metadata all report `4.0.0`.
 - [ ] Confirm the Beta classifier and Python `>=3.10` requirement remain correct.
-- [ ] Replace the changelog's `Unreleased` marker for 3.0.0 with the actual
-      release date only when the release is being made.
+- [ ] Confirm the changelog records the release date as `2026-07-18`.
 - [ ] Remove release-pending wording from README and release notes at release
       time.
-- [ ] Finalize `CHANGELOG.md` and `RELEASE_NOTES_v3.0.0.md`.
+- [ ] Finalize `CHANGELOG.md` and `RELEASE_NOTES_v4.0.0.md`.
 - [ ] Review documentation and built metadata for placeholder or stale URLs.
 - [ ] Confirm the repository URL is
-      `https://github.com/MacallanTheRoot/testrepo`.
+      `https://github.com/MacallanTheRoot/DayiStegoSolver`.
 
 ## Verification
 
@@ -60,15 +60,15 @@ Choose one tag form only after all checks pass. A signed tag requires a
 configured GPG key:
 
 ```bash
-git tag -s v3.0.0 -m "Dayı Stego Solver 3.0.0"
-git push origin v3.0.0
+git tag -s v4.0.0 -m "Dayı Stego Solver 4.0.0"
+git push origin v4.0.0
 ```
 
 Unsigned annotated alternative:
 
 ```bash
-git tag -a v3.0.0 -m "Dayı Stego Solver 3.0.0"
-git push origin v3.0.0
+git tag -a v4.0.0 -m "Dayı Stego Solver 4.0.0"
+git push origin v4.0.0
 ```
 
 - [ ] Verify the chosen tag points to the intended release commit before push.
@@ -76,8 +76,8 @@ git push origin v3.0.0
 
 ## GitHub release
 
-- [ ] Target tag: `v3.0.0`.
-- [ ] Release title: `Dayı Stego Solver 3.0.0`.
+- [ ] Target tag: `v4.0.0`.
+- [ ] Release title: `Dayı Stego Solver 4.0.0`.
 - [ ] Paste the finalized release notes.
 - [ ] Attach the wheel and source distribution from successful CI.
 - [ ] Attach and verify checksums if they were generated.

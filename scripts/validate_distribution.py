@@ -11,13 +11,13 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable, Sequence
 
 EXPECTED_NAME = "dayi-stego-solver"
-EXPECTED_VERSION = "3.0.0"
+EXPECTED_VERSION = "4.0.0"
 EXPECTED_AUTHOR = "MacallanTheRoot"
 EXPECTED_REQUIRES_PYTHON = ">=3.10"
 EXPECTED_ENTRY_POINT = "dayi = dayi.cli:main"
 EXPECTED_URLS = {
-    "Repository": "https://github.com/MacallanTheRoot/testrepo",
-    "Bug Tracker": "https://github.com/MacallanTheRoot/testrepo/issues",
+    "Repository": "https://github.com/MacallanTheRoot/DayiStegoSolver",
+    "Bug Tracker": "https://github.com/MacallanTheRoot/DayiStegoSolver/issues",
 }
 
 WHEEL_REQUIRED = {
@@ -37,7 +37,7 @@ SDIST_REQUIRED = {
     "MANIFEST.in",
     "README.md",
     "RELEASE_CHECKLIST.md",
-    "RELEASE_NOTES_v3.0.0.md",
+    "RELEASE_NOTES_v4.0.0.md",
     "pyproject.toml",
     "scripts/check.sh",
     "scripts/validate_distribution.py",

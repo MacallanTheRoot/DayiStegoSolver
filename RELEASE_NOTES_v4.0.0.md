@@ -1,12 +1,14 @@
-# Dayı Stego Solver 3.0.0
+# Dayı Stego Solver 4.0.0
 
-Release status: prepared for a future tag and GitHub release. Version 3.0.0 has
-not been marked as released by this document, and no release date is assigned.
+Release status: prepared for the production tag and GitHub release planned for
+2026-07-18. The release wording will be finalized after production-main CI
+passes for the exact release commit.
 
 ## Overview
 
-Dayı Stego Solver 3.0.0 is a major internal and CLI reliability release focused
-on deterministic plugin execution, safer workspace and extraction handling,
+Dayı Stego Solver 4.0.0 is a major reliability, security-boundary, CLI,
+plugin-inspection, diagnostics, packaging, and CI release. It focuses on
+deterministic plugin execution, safer workspace and extraction handling,
 inspectable installation and plugin state, maintainable commands, and verifiable
 package artifacts. It retains a standard-library-only core and keeps optional
 forensic runtimes and external steganography tools optional.
@@ -32,15 +34,16 @@ dayi plugins list --json
 
 Additional highlights include dynamic plugin discovery diagnostics, explicit
 workspace-parent configuration, retained-artifact reporting, Python 3.10–3.13
-CI configuration, archive-content validation, and clean wheel/sdist smoke tests.
+CI configuration, extraction-evidence success semantics, archive-content
+validation, and clean wheel/sdist smoke tests.
 
 ## Installation
 
 For users who have access to the Git repository:
 
 ```bash
-git clone https://github.com/MacallanTheRoot/testrepo.git
-cd testrepo
+git clone https://github.com/MacallanTheRoot/DayiStegoSolver.git
+cd DayiStegoSolver
 python -m pip install .
 ```
 
@@ -50,10 +53,10 @@ For an editable development installation:
 python -m pip install -e '.[dev]'
 ```
 
-For a wheel obtained from a trusted future release or successful CI artifact:
+For a wheel obtained from the trusted release or a successful CI artifact:
 
 ```bash
-python -m pip install --no-deps dayi_stego_solver-3.0.0-py3-none-any.whl
+python -m pip install --no-deps dayi_stego_solver-4.0.0-py3-none-any.whl
 ```
 
 No PyPI publication is asserted by these notes.
@@ -92,7 +95,7 @@ not execute plugin runners or external binaries.
 
 ## Security and reliability
 
-Version 3.0.0 adds bounded subprocess-output retention, process-group timeout
+Version 4.0.0 adds bounded subprocess-output retention, process-group timeout
 termination, archive path and extraction limits, workspace boundary and symlink
 protections, user-regex safety checks, bounded optional-parser processing, and
 cancellation-safe partial reporting. These controls reduce risk when processing
@@ -133,7 +136,7 @@ distribution archive validation gaps.
 
 Release-preparation baseline verified locally:
 
-- 183 passed, 1 skipped.
+- 184 passed, 1 skipped.
 - Pyflakes, compileall, and `git diff --check` completed successfully.
 - Wheel and source distribution built and passed content/metadata validation.
 - Clean wheel and source-distribution installations passed CLI smoke checks.

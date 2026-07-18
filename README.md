@@ -5,17 +5,17 @@
 ### *"Hallederiz yeğenim." — The Uncle who always finds the flag.*
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
-[![CI](https://github.com/MacallanTheRoot/testrepo/actions/workflows/ci.yml/badge.svg)](https://github.com/MacallanTheRoot/testrepo/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/Version-3.0.0-success)](https://github.com/MacallanTheRoot/testrepo)
+[![CI](https://github.com/MacallanTheRoot/DayiStegoSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/MacallanTheRoot/DayiStegoSolver/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/Version-4.0.0-success)](https://github.com/MacallanTheRoot/DayiStegoSolver)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/Core%20Deps-Zero%20%28stdlib%29-brightgreen)](pyproject.toml)
 [![Async](https://img.shields.io/badge/asyncio-gather-blue)](dayi/runner.py)
 
 **English** | [Türkçe](#-türkçe-dokümantasyon)
 
-> **Release status:** Version 3.0.0 is prepared but has not yet been tagged or
-> published as a GitHub release. See the [changelog](CHANGELOG.md) and
-> [release notes](RELEASE_NOTES_v3.0.0.md).
+> **Release status:** Version 4.0.0 is being prepared for release on 2026-07-18.
+> It has not yet been tagged or published. See the [changelog](CHANGELOG.md) and
+> [release notes](RELEASE_NOTES_v4.0.0.md).
 
 > Developed with ☕ and CTF tears by [MacallanTheRoot](https://github.com/MacallanTheRoot)
 
@@ -139,8 +139,8 @@ All four modules skip cleanly when their optional runtime is absent; the default
 For users with access to the repository:
 
 ```bash
-git clone https://github.com/MacallanTheRoot/testrepo.git
-cd testrepo
+git clone https://github.com/MacallanTheRoot/DayiStegoSolver.git
+cd DayiStegoSolver
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
@@ -534,8 +534,8 @@ Dört modül de isteğe bağlı runtime bulunmadığında temizce atlanır; vars
 Depoya erişimi olan kullanıcılar için:
 
 ```bash
-git clone https://github.com/MacallanTheRoot/testrepo.git
-cd testrepo
+git clone https://github.com/MacallanTheRoot/DayiStegoSolver.git
+cd DayiStegoSolver
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .

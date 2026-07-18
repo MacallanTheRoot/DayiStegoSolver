@@ -13,7 +13,8 @@ from dayi import cli
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
-REPOSITORY_URL = "https://github.com/MacallanTheRoot/testrepo"
+REPOSITORY_URL = "https://github.com/MacallanTheRoot/DayiStegoSolver"
+VERSION = "4.0.0"
 
 
 def _load_project_metadata() -> dict:
@@ -101,9 +102,29 @@ class PackageMetadataTests(unittest.TestCase):
             )
 
     def test_runtime_and_package_metadata_versions_match(self) -> None:
-        self.assertEqual(self.project["version"], "3.0.0")
+        self.assertEqual(self.project["version"], VERSION)
         self.assertEqual(dayi.__version__, self.project["version"])
         self.assertEqual(dayi.__author__, "MacallanTheRoot")
+
+    def test_release_documents_follow_authoritative_identity(self) -> None:
+        release_notes = ROOT / f"RELEASE_NOTES_v{VERSION}.md"
+        documents = {
+            "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
+            "CHANGELOG.md": (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
+            "RELEASE_CHECKLIST.md": (ROOT / "RELEASE_CHECKLIST.md").read_text(
+                encoding="utf-8"
+            ),
+            release_notes.name: release_notes.read_text(encoding="utf-8"),
+        }
+
+        self.assertTrue(release_notes.is_file())
+        self.assertIn(f"# Dayı Stego Solver {VERSION}", documents[release_notes.name])
+        self.assertIn(f"## [{VERSION}] - 2026-07-18", documents["CHANGELOG.md"])
+        self.assertIn(f"v{VERSION}", documents["RELEASE_CHECKLIST.md"])
+        self.assertIn(f"Version-{VERSION}", documents["README.md"])
+        for text in documents.values():
+            self.assertIn(REPOSITORY_URL, text)
+            self.assertNotIn("MacallanTheRoot/" + "testrepo", text)
 
     def test_version_mode_needs_no_target_flag_or_runtime_initialization(self) -> None:
         output = io.StringIO()
@@ -118,7 +139,7 @@ class PackageMetadataTests(unittest.TestCase):
                 cli.main()
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertEqual(output.getvalue(), "dayi 3.0.0\n")
+        self.assertEqual(output.getvalue(), "dayi 4.0.0\n")
         asyncio_run.assert_not_called()
         build_integration.assert_not_called()
         discover_plugins.assert_not_called()
@@ -133,7 +154,7 @@ class PackageMetadataTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout, "dayi 3.0.0\n")
+        self.assertEqual(completed.stdout, "dayi 4.0.0\n")
         self.assertEqual(completed.stderr, "")
 
 

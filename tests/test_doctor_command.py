@@ -88,7 +88,7 @@ def _capability(
 def _core(*, healthy: bool = True) -> CoreDiagnostic:
     return CoreDiagnostic(
         status="healthy" if healthy else "unhealthy",
-        dayi_version="3.0.0" if healthy else None,
+        dayi_version="4.0.0" if healthy else None,
         python_implementation="CPython",
         python_version="3.13.5",
         python_supported=healthy,

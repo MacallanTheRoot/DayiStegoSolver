@@ -8,7 +8,7 @@ All heavy imports (runner, tools, integrations) are deferred to avoid
 slowing down simple `import dayi` calls.
 """
 
-__version__ = "3.0.0"
+__version__ = "4.0.0"
 MIN_SUPPORTED_PYTHON = (3, 10)
 __author__ = "MacallanTheRoot"
 __license__ = "MIT"
