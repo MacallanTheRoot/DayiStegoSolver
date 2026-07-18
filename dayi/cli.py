@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 from dayi import __version__
+from dayi.doctor import doctor_exit_code, render_json, render_plain, run_diagnostics
 from dayi.persona import BANNER, setup_logger
 from dayi.scanner import build_flag_pattern_config
 from dayi.runner import (
@@ -258,6 +259,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         """,
     )
     scan_parser.set_defaults(command="scan")
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Çekirdek kurulumu ve isteğe bağlı kabiliyetleri denetle",
+        description=(
+            "Ağ erişimi veya hedef taraması yapmadan Python, paket, harici "
+            "araç ve isteğe bağlı modül durumunu denetle."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Tanı sonucunu kararlı JSON olarak stdout'a yaz",
+    )
+    doctor_parser.set_defaults(command="doctor")
     return parser
 
 
@@ -268,7 +284,7 @@ def normalize_cli_argv(argv: list[str]) -> list[str]:
         return ["scan"]
     if tokens[0] in {"-h", "--help", "--version"}:
         return tokens
-    if tokens[0] == "scan":
+    if tokens[0] in {"scan", "doctor"}:
         return tokens
     return ["scan", *tokens]
 
@@ -443,6 +459,12 @@ def main() -> None:
         args = parse_cli_args(parser=parser)
     except SystemExit:
         raise  # Let argparse handle --help and genuine errors normally
+
+    if args.command == "doctor":
+        report = run_diagnostics()
+        rendered = render_json(report) if args.json_output else render_plain(report)
+        print(rendered)
+        sys.exit(doctor_exit_code(report))
 
     try:
         exit_code = asyncio.run(async_main(args))

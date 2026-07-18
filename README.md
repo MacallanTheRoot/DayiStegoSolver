@@ -157,7 +157,16 @@ pip install -e ".[pcap]"
 pip install -e ".[integration]"
 
 dayi --help
+dayi doctor
 ```
+
+`dayi doctor` checks core Python/package health, known external executables,
+and optional Python capabilities without scanning a target or making network
+requests. External tools are format-specific and optional; missing ones do not
+prevent basic use. Exit code `0` means the core CLI remains usable, including a
+degraded result with optional components missing. Exit code `1` means the core
+installation is unhealthy. Use `dayi doctor --json` for deterministic CI or
+script output.
 
 **System tools (Kali/Debian/Ubuntu):**
 
@@ -210,6 +219,16 @@ known. Run `dayi scan --help` for scan options. The legacy forms
 `dayi FILE` and `dayi FILE --flag REGEX` remain supported and use the same scan
 path. To scan a target literally named `scan`, use `dayi scan -- scan` (or an
 unambiguous path such as `./scan`).
+
+Installation diagnostics require no target:
+
+```bash
+dayi doctor
+dayi doctor --json
+```
+
+Doctor makes no network requests. Missing external tools or optional Python
+modules produce a degraded report but still exit `0` while the core is usable.
 
 **Full pipeline — everything at once:**
 
@@ -511,7 +530,16 @@ pip install -e ".[pcap]"
 
 # CTFd/Discord fallback için (ctfshit olmadan)
 pip install -e ".[integration]"
+
+dayi doctor
 ```
+
+`dayi doctor`, hedef taramadan veya ağ isteği yapmadan çekirdek Python/paket
+sağlığını, bilinen harici araçları ve isteğe bağlı Python kabiliyetlerini
+denetler. Harici araçlar format-özel ve isteğe bağlıdır; eksik olmaları temel
+kullanımı engellemez. Çekirdek CLI kullanılabiliyorsa isteğe bağlı eksiklerde
+bile çıkış kodu `0`, çekirdek kurulum sağlıksızsa `1` olur. CI ve scriptler için
+`dayi doctor --json` kullanın.
 
 **Sistem araçları (Kali / Debian / Ubuntu):**
 
@@ -559,6 +587,17 @@ dayi scan mystery.png --workspace-dir /guvenli/calisma-alanlari
 `dayi DOSYA` ve `dayi DOSYA --flag REGEX` biçimleri aynı tarama yoluyla
 desteklenmeye devam eder. Adı doğrudan `scan` olan hedef için
 `dayi scan -- scan` veya `./scan` gibi açık bir yol kullanın.
+
+Hedef gerektirmeyen kurulum tanısı:
+
+```bash
+dayi doctor
+dayi doctor --json
+```
+
+Doctor ağ isteği yapmaz. Eksik harici araçlar veya isteğe bağlı Python
+modülleri çekirdek kullanılabildiği sürece degraded sonuç verir ve `0` ile
+çıkar.
 
 **Tam pipeline:**
 

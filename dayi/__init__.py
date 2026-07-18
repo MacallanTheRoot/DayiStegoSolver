@@ -9,6 +9,7 @@ slowing down simple `import dayi` calls.
 """
 
 __version__ = "3.0.0"
+MIN_SUPPORTED_PYTHON = (3, 10)
 __author__ = "MacallanTheRoot"
 __license__ = "MIT"
 __description__ = (

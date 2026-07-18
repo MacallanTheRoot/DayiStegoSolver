@@ -85,6 +85,7 @@ class PackageMetadataTests(unittest.TestCase):
     def test_author_beta_classifier_and_python_requirement(self) -> None:
         self.assertEqual(self.project["authors"], [{"name": "MacallanTheRoot"}])
         self.assertEqual(self.project["requires-python"], ">=3.10")
+        self.assertEqual(dayi.MIN_SUPPORTED_PYTHON, (3, 10))
         self.assertIn(
             "Development Status :: 4 - Beta",
             self.project["classifiers"],
