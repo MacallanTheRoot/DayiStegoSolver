@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from dayi.cli import build_arg_parser
+from dayi.cli import build_arg_parser, parse_cli_args
 from dayi.integrations import IntegrationManager
 from dayi.persona import setup_logger
 from dayi.reporter import ScanReport, ToolResult, _fallback_markdown
@@ -93,20 +93,20 @@ class RunnerRetentionTests(unittest.IsolatedAsyncioTestCase):
             priority=1, run=carve,
         ),))
         with tempfile.TemporaryDirectory() as tmpdir:
-            old_cwd = Path.cwd()
-            os.chdir(tmpdir)
-            try:
-                target = Path(tmpdir) / "sample.bin"
-                target.write_bytes(b"input")
-                report = await DayiRunner(
-                    target, re.compile(r"FLAG\{[^}]+\}"), registry=registry
-                ).run_all()
-                retained = Path(report.retained_workspace or "")
-                self.assertTrue(retained.is_dir())
-                self.assertTrue((retained / "binwalk" / "_sample.extracted" / "flag.png").is_file())
-                self.assertEqual(retained.parent, Path(tmpdir))
-            finally:
-                os.chdir(old_cwd)
+            root = Path(tmpdir)
+            target = root / "sample.bin"
+            target.write_bytes(b"input")
+            workspace_parent = root / "workspaces"
+            report = await DayiRunner(
+                target,
+                re.compile(r"FLAG\{[^}]+\}"),
+                registry=registry,
+                workspace_parent=workspace_parent,
+            ).run_all()
+            retained = Path(report.retained_workspace or "")
+            self.assertTrue(retained.is_dir())
+            self.assertTrue((retained / "binwalk" / "_sample.extracted" / "flag.png").is_file())
+            self.assertEqual(retained.parent, workspace_parent)
 
     async def test_cancellation_builds_partial_report_and_closes_workspace(self) -> None:
         entered = asyncio.Event()
@@ -180,7 +180,7 @@ assert len(registry.plugins) == 19
         parser = build_arg_parser()
         for option, value in (("--timeout", "0"), ("--threads", "-1"), ("--bf-limit", "-1")):
             with self.assertRaises(SystemExit):
-                parser.parse_args(["target.bin", "--flag", "x", option, value])
+                parse_cli_args(["target.bin", "--flag", "x", option, value], parser)
 
     def test_setup_logger_does_not_duplicate_owned_handlers(self) -> None:
         name = f"dayi.test.{id(self)}"

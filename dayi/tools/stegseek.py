@@ -21,7 +21,7 @@ from dayi.tools._plugin import (
     PluginContext,
     PluginPhase,
     ToolPlugin,
-    extraction_or_exit_success,
+    extraction_evidence_success,
 )
 
 logger = logging.getLogger("dayi")
@@ -75,13 +75,15 @@ async def run_stegseek(
 
         flags: list[str] = []
         extracted_flags: dict[str, list[str]] = {}
+        extraction_succeeded = False
 
         if not timed_out:
             logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
             flags = list(dict.fromkeys(scan_text(stdout, flag_pattern) + scan_text(stderr, flag_pattern)))
 
             # Scan extracted output file if it was created
-            if out_path.exists():
+            if out_path.is_file() and out_path.stat().st_size > 0:
+                extraction_succeeded = True
                 hits = await asyncio.to_thread(scan_file, out_path, flag_pattern)
                 if hits:
                     extracted_flags["stegseek_extracted"] = hits
@@ -97,6 +99,7 @@ async def run_stegseek(
             flags_found=flags,
             elapsed_seconds=elapsed,
             timed_out=timed_out,
+            extraction_succeeded=extraction_succeeded,
             extracted_flags=extracted_flags,
         )
 
@@ -118,6 +121,6 @@ PLUGIN_SPECS = (
         priority=10,
         run=_plugin_run,
         skip_if_phase_succeeded=(PluginPhase.MINI_BRUTE_FORCE,),
-        success_evaluator=extraction_or_exit_success,
+        success_evaluator=extraction_evidence_success,
     ),
 )

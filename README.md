@@ -5,7 +5,7 @@
 ### *"Hallederiz yeğenim." — The Uncle who always finds the flag.*
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
-[![Version](https://img.shields.io/badge/Version-3.0.0-success)](https://github.com/MacallanTheRoot/dayi-stego-solver)
+[![Version](https://img.shields.io/badge/Version-3.0.0-success)](https://github.com/MacallanTheRoot/testrepo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/Core%20Deps-Zero%20%28stdlib%29-brightgreen)](pyproject.toml)
 [![Async](https://img.shields.io/badge/asyncio-gather-blue)](dayi/runner.py)
@@ -132,8 +132,8 @@ All four modules skip cleanly when their optional runtime is absent; the default
 ### 📦 Installation
 
 ```bash
-git clone https://github.com/MacallanTheRoot/dayi-stego-solver.git
-cd dayi-stego-solver
+git clone https://github.com/MacallanTheRoot/testrepo.git
+cd testrepo
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
@@ -187,20 +187,34 @@ No config file. No env vars. If `ctfshit/src/*.py` is importable, it gets used.
 ### 🚀 Usage
 
 ```bash
-# Basic
-dayi photo.jpg --flag "CTF{.*?}"
+# Preferred: built-in common flag patterns
+dayi scan photo.jpg
+
+# Known challenge format: use only this custom pattern
+dayi scan photo.jpg --flag "CTF{.*?}"
 
 # With rockyou (streamed, safe)
-dayi stego.jpg --flag "picoCTF{.*?}" --wordlist /usr/share/wordlists/rockyou.txt
+dayi scan stego.jpg --flag "picoCTF{.*?}" --wordlist /usr/share/wordlists/rockyou.txt
 
 # JSON report, verbose
-dayi mystery.png --flag "HTB{.*?}" -v --output report --format json
+dayi scan mystery.png -v --output report --format json
+
+# Put the unique scan workspace under a chosen parent
+dayi scan mystery.png --workspace-dir /safe/workspaces
 ```
+
+Without `--flag`, the conservative built-in matcher recognizes only `CTF`,
+`FLAG`, `HTB`, `picoCTF`, and `THM` brace forms. Custom challenge prefixes may
+not be detected, so `--flag` remains recommended when the expected format is
+known. Run `dayi scan --help` for scan options. The legacy forms
+`dayi FILE` and `dayi FILE --flag REGEX` remain supported and use the same scan
+path. To scan a target literally named `scan`, use `dayi scan -- scan` (or an
+unambiguous path such as `./scan`).
 
 **Full pipeline — everything at once:**
 
 ```bash
-dayi challenge.jpg \
+dayi scan challenge.jpg \
     --flag "CTF{.*?}" \
     --wordlist rockyou.txt \
     --timeout 120 \
@@ -220,8 +234,8 @@ dayi challenge.jpg \
 **Argument order doesn't matter** — `parse_intermixed_args()` handles it:
 
 ```bash
-dayi --flag "CTF{.*?}" --output rapor image.png   # file last — fine
-dayi --flag "FLAG{.*?}" mystery.bmp --wordlist words.txt  # file in the middle — also fine
+dayi scan --flag "CTF{.*?}" --output rapor image.png   # file last — fine
+dayi --flag "FLAG{.*?}" mystery.bmp --wordlist words.txt  # legacy — still fine
 ```
 
 **All flags:**
@@ -236,6 +250,7 @@ Core:
   --timeout/-t N          Per-tool timeout in seconds. Default: 60
   --threads N             BF worker count. Default: 8
   --bf-limit N            Max BF attempts (0=unlimited). Default: 1000
+  --workspace-dir PATH    Parent for the unique per-scan workspace
   --log-file FILE         Also write logs here
   -v/--verbose            Debug output
 
@@ -249,6 +264,13 @@ Integration (v2.0):
 Write-up (v3.0):
   --writeup FILE.md       Generate Markdown writeup after scan
 ```
+
+By default, each scan gets a unique workspace under the operating system's
+temporary directory. `--workspace-dir` changes only the parent; Dayı still
+creates a unique `dayi_runner_*` child and never treats the parent itself as
+managed output. Empty workspaces are removed. Workspaces containing useful
+extractions are retained and their exact child path is recorded in TXT/JSON
+reports. Treat every retained artifact as untrusted input.
 
 ---
 
@@ -466,8 +488,8 @@ Dört modül de isteğe bağlı runtime bulunmadığında temizce atlanır; vars
 ### 📦 Kurulum
 
 ```bash
-git clone https://github.com/MacallanTheRoot/dayi-stego-solver.git
-cd dayi-stego-solver
+git clone https://github.com/MacallanTheRoot/testrepo.git
+cd testrepo
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
@@ -514,20 +536,34 @@ git clone https://github.com/MacallanTheRoot/ctfshit ctfshit/
 ### 🚀 Kullanım
 
 ```bash
-# Temel
-dayi foto.jpg --flag "CTF{.*?}"
+# Tercih edilen: yerleşik yaygın flag desenleri
+dayi scan foto.jpg
+
+# Challenge formatı biliniyorsa yalnızca bu özel deseni kullan
+dayi scan foto.jpg --flag "CTF{.*?}"
 
 # Wordlist ile (stream edilir, OOM yok)
-dayi stego.jpg --flag "picoCTF{.*?}" --wordlist /usr/share/wordlists/rockyou.txt
+dayi scan stego.jpg --flag "picoCTF{.*?}" --wordlist /usr/share/wordlists/rockyou.txt
 
 # JSON rapor, detaylı
-dayi mystery.png --flag "HTB{.*?}" -v --output rapor --format json
+dayi scan mystery.png -v --output rapor --format json
+
+# Benzersiz tarama çalışma alanını seçilen üst dizinde oluştur
+dayi scan mystery.png --workspace-dir /guvenli/calisma-alanlari
 ```
+
+`--flag` verilmezse muhafazakâr yerleşik eşleştirici yalnızca `CTF`, `FLAG`,
+`HTB`, `picoCTF` ve `THM` süslü parantez biçimlerini tanır. Özel challenge
+öneklerini kaçırabileceği için beklenen format biliniyorsa `--flag` kullanmak
+önerilir. Tarama seçenekleri için `dayi scan --help` çalıştırın. Eski
+`dayi DOSYA` ve `dayi DOSYA --flag REGEX` biçimleri aynı tarama yoluyla
+desteklenmeye devam eder. Adı doğrudan `scan` olan hedef için
+`dayi scan -- scan` veya `./scan` gibi açık bir yol kullanın.
 
 **Tam pipeline:**
 
 ```bash
-dayi challenge.jpg \
+dayi scan challenge.jpg \
     --flag "CTF{.*?}" \
     --wordlist rockyou.txt \
     --timeout 120 \
@@ -542,6 +578,13 @@ dayi challenge.jpg \
     --format json \
     -v
 ```
+
+Varsayılan olarak her tarama için işletim sisteminin geçici dizini altında
+benzersiz bir çalışma alanı oluşturulur. `--workspace-dir` yalnızca üst dizini
+değiştirir; Dayı yine benzersiz bir `dayi_runner_*` alt dizini oluşturur ve üst
+dizini yönetilen çıktı saymaz. Boş çalışma alanları temizlenir. Faydalı çıkarım
+içerenler korunur ve tam alt dizin yolu TXT/JSON raporuna yazılır. Korunan tüm
+artifact'ları güvenilmeyen girdi olarak değerlendirin.
 
 ---
 

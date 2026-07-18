@@ -19,8 +19,8 @@ Integration is opt-in: if none of the above are provided, the tool behaves
 exactly as v1.x. When configured, each found flag is dispatched immediately
 (fire-and-forget) without waiting for the scan to finish.
 
-ARGPARSE FLEXIBILITY: Uses parse_intermixed_args() — the positional target
-    file can appear anywhere in the argument list.
+ARGPARSE FLEXIBILITY: The explicit ``scan`` command and a small legacy argv
+    normalizer share one scan parser and one execution path.
 
 GRACEFUL SHUTDOWN: KeyboardInterrupt → asyncio task cancelled → integration
     drained → partial report written → exit 130 (SIGINT convention).
@@ -30,9 +30,14 @@ import asyncio
 import sys
 from pathlib import Path
 
+from dayi import __version__
 from dayi.persona import BANNER, setup_logger
-from dayi.scanner import compile_pattern
-from dayi.runner import DayiRunner
+from dayi.scanner import build_flag_pattern_config
+from dayi.runner import (
+    DayiRunner,
+    WorkspaceConfigurationError,
+    validate_workspace_parent,
+)
 from dayi.reporter import ScanReport, write_report, export_markdown_writeup
 from dayi.integrations import build_integration
 
@@ -61,7 +66,7 @@ def _nonnegative_int(value: str) -> int:
     return parsed
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
+def _build_scan_parent_parser() -> argparse.ArgumentParser:
     """
     Build and return the CLI argument parser.
 
@@ -69,26 +74,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         Configured ArgumentParser instance.
     """
     parser = argparse.ArgumentParser(
-        prog="dayi",
-        description="Dayı Stego Solver v3.0 — CTF Steganography Brute-force & Analysis Tool",
+        add_help=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Örnekler / Examples:
-  # Temel kullanım
-  dayi photo.jpg --flag "CTF{.*?}" --wordlist rockyou.txt --output rapor
-
-  # Otomatik write-up ile
-  dayi stego.png --flag "picoCTF{.*?}" --writeup writeup.md
-
-  # CTFd + Discord + write-up
-  dayi stego.png --flag "picoCTF{.*?}" \\
-      --ctfd-url https://ctf.example.com --ctfd-token TOKEN123 \\
-      --challenge-id 42 --webhook https://discord.com/api/webhooks/… \\
-      --writeup stego_writeup.md
-
-  # Parametre sırası esnekliği (dosya sonda da olabilir)
-  dayi --flag "FLAG{.*?}" --output sonuc --format json image.png
-        """,
     )
 
     # ── Core arguments ────────────────────────────────────────────────────────
@@ -101,8 +88,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--flag", "-f",
         metavar="REGEX",
-        required=True,
-        help='Aranacak flag regex deseni. Örnek: "CTF{.*?}" veya "picoCTF{[^}]+}"',
+        default=None,
+        help=(
+            "Aranacak özel flag regex deseni. Verilmezse yerleşik yaygın CTF "
+            "desenleri kullanılır"
+        ),
     )
     parser.add_argument(
         "--wordlist", "-w",
@@ -117,6 +107,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("dayi_rapor"),
         help="Çıktı dosyasının adı (uzantısız). Varsayılan: dayi_rapor",
+    )
+    parser.add_argument(
+        "--workspace-dir",
+        metavar="PATH",
+        type=Path,
+        default=None,
+        help=(
+            "Benzersiz analiz çalışma alanlarının oluşturulacağı üst klasör. "
+            "Varsayılan: sistem geçici dizini"
+        ),
     )
     parser.add_argument(
         "--format",
@@ -225,6 +225,64 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the top-level parser and its explicit scan command."""
+    parser = argparse.ArgumentParser(
+        prog="dayi",
+        description=(
+            f"Dayı Stego Solver v{__version__} — "
+            "CTF Steganography Brute-force & Analysis Tool"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+    scan_parser = subparsers.add_parser(
+        "scan",
+        parents=[_build_scan_parent_parser()],
+        help="Bir hedef dosyada steganografi ve forensics taraması çalıştır",
+        description=(
+            "Hedef dosyayı tara. --flag verilmezse Dayı yaygın CTF flag "
+            "öneklerini muhafazakâr biçimde arar."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Örnekler / Examples:
+  dayi scan photo.jpg
+  dayi scan photo.jpg --flag "CTF{.*?}" --wordlist rockyou.txt
+  dayi scan --flag "FLAG{.*?}" --output sonuc --format json image.png
+        """,
+    )
+    scan_parser.set_defaults(command="scan")
+    return parser
+
+
+def normalize_cli_argv(argv: list[str]) -> list[str]:
+    """Map the legacy flat scan syntax onto the explicit scan command."""
+    tokens = list(argv)
+    if not tokens:
+        return ["scan"]
+    if tokens[0] in {"-h", "--help", "--version"}:
+        return tokens
+    if tokens[0] == "scan":
+        return tokens
+    return ["scan", *tokens]
+
+
+def parse_cli_args(
+    argv: list[str] | None = None,
+    parser: argparse.ArgumentParser | None = None,
+) -> argparse.Namespace:
+    """Parse explicit or legacy scan arguments into one shared namespace."""
+    active_parser = parser if parser is not None else build_arg_parser()
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    return active_parser.parse_args(normalize_cli_argv(raw_args))
+
+
 async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | None, int]:
     """
     Core async analysis logic, separated for clean Ctrl+C handling.
@@ -233,7 +291,7 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
     DayiRunner so notifications are dispatched as flags are found.
 
     Args:
-        args:   Parsed CLI arguments (from parse_intermixed_args).
+        args:   Parsed CLI arguments for the shared scan execution path.
         logger: Configured logger instance.
 
     Returns:
@@ -261,12 +319,23 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
         else:
             wordlist = args.wordlist
 
-    pattern = compile_pattern(args.flag)
-    if pattern is None:
+    pattern_config = build_flag_pattern_config(args.flag)
+    if pattern_config is None:
         logger.error(
             "[✗] Geçersiz regex deseni! Düzgün bir tane ver bana, ben büyücü değilim."
         )
         return None, 1
+
+    workspace_parent: Path | None = None
+    if args.workspace_dir is not None:
+        try:
+            workspace_parent = validate_workspace_parent(args.workspace_dir)
+        except WorkspaceConfigurationError as exc:
+            logger.error(
+                "[✗] Yeğenim çalışma alanı klasörü hazırlanamadı: "
+                f"{exc}. Yazılabilir bir klasör ver."
+            )
+            return None, 1
 
     # ── Integration setup ─────────────────────────────────────────────────────
     integration = build_integration(
@@ -279,11 +348,15 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
 
     # ── Summary log ───────────────────────────────────────────────────────────
     logger.info(f"[*] Hedef dosya   : {target}")
-    logger.info(f"[*] Flag deseni   : {args.flag}")
+    logger.info(f"[*] Flag deseni   : {pattern_config.display}")
+    logger.info(f"[*] Desen kaynağı : {pattern_config.source}")
     logger.info(f"[*] Wordlist      : {wordlist or 'Belirtilmedi'}")
     logger.info(f"[*] Timeout       : {args.timeout}s per tool")
     logger.info(f"[*] BF Threads    : {args.threads}")
     logger.info(f"[*] BF Limit      : {args.bf_limit if args.bf_limit else 'Sınırsız (dikkat!)'}")
+    logger.info(
+        f"[*] Workspace üstü: {workspace_parent or 'Sistem geçici dizini'}"
+    )
     if integration:
         logger.info(f"[*] CTFd URL      : {args.ctfd_url or 'Devre dışı'}")
         logger.info(f"[*] Webhook       : {'Aktif' if args.webhook else 'Devre dışı'}")
@@ -292,12 +365,15 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
 
     runner = DayiRunner(
         target=target,
-        pattern=pattern,
+        pattern=pattern_config.compiled,
         wordlist=wordlist,
         timeout=args.timeout,
         bf_threads=args.threads,
         bf_limit=args.bf_limit,
         integration=integration,
+        workspace_parent=workspace_parent,
+        pattern_display=pattern_config.display,
+        pattern_source=pattern_config.source,
     )
 
     logger.info("[*] Tarama başlıyor... Sabret yeğenim, Dayı çalışıyor.\n")
@@ -358,13 +434,13 @@ def main() -> None:
     """
     Synchronous CLI entry point.
 
-    Uses parse_intermixed_args() so the positional DOSYA argument can appear
-    anywhere in the command line relative to the optional arguments.
+    Normalizes the legacy flat syntax into the explicit scan command before
+    parsing so both forms use the same analysis implementation.
     """
     parser = build_arg_parser()
 
     try:
-        args = parser.parse_intermixed_args()
+        args = parse_cli_args(parser=parser)
     except SystemExit:
         raise  # Let argparse handle --help and genuine errors normally
 

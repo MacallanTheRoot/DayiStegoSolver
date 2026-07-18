@@ -11,6 +11,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Optional, TextIO
 
+from dayi import __version__
+
 
 # ANSI codes — nothing fancy, just what works in every terminal
 class _Colors:
@@ -84,14 +86,14 @@ NO_FLAG_BANNER = """
 ╚══════════════════════════════════════════════════════════════╝
 """
 
-BANNER = r"""
+BANNER = rf"""
     ____  ___   __  ______
    / __ \/ _ | \/ / /  _/
   / / / / /| | \  / / /
  / /_/ / ___ | / / / /
 /_____/_/ _|_|/_/___/
 
-  Dayı Stego Solver v3.0  —  "Hallederiz Yeğenim" Edition
+  Dayı Stego Solver v{__version__}  —  "Hallederiz Yeğenim" Edition
   ════════════════════════════════════════════════════════
   Dev by MacallanTheRoot · https://github.com/MacallanTheRoot
 """

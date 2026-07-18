@@ -101,17 +101,23 @@ def flags_found_success(result: ToolResult) -> bool:
     return bool(result.flags_found)
 
 
-def extraction_or_exit_success(result: ToolResult) -> bool:
-    """Treat flags, extracted output, or a zero exit code as success."""
+def extraction_evidence_success(result: ToolResult) -> bool:
+    """Require explicit, meaningful extraction evidence for success."""
     return bool(
         not result.skipped
         and not result.timed_out
+        and not result.error
         and (
-            result.flags_found
-            or result.extracted_flags
-            or result.return_code == 0
+            result.extraction_succeeded
+            or result.flags_found
+            or any(result.extracted_flags.values())
         )
     )
+
+
+def extraction_or_exit_success(result: ToolResult) -> bool:
+    """Compatibility alias; a zero exit status alone is not success."""
+    return extraction_evidence_success(result)
 
 
 @dataclass(frozen=True)

@@ -34,6 +34,8 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from dayi import __version__
+
 logger = logging.getLogger("dayi")
 
 def _resolve_optional_backends() -> tuple[tuple[object, object, object] | None, object | None]:
@@ -396,7 +398,10 @@ class IntegrationManager:
                             },
                         ],
                         "footer": {
-                            "text": "Dayı Stego Solver v3.0 — Hallederiz yeğenim!"
+                            "text": (
+                                f"Dayı Stego Solver v{__version__} — "
+                                "Hallederiz yeğenim!"
+                            )
                         },
                     }
                     async with session.post(
@@ -475,7 +480,11 @@ class IntegrationManager:
                             "inline": False,
                         },
                     ],
-                    "footer": {"text": "Dayı Stego Solver v3.0 — urllib yedeği"},
+                    "footer": {
+                        "text": (
+                            f"Dayı Stego Solver v{__version__} — urllib yedeği"
+                        )
+                    },
                 }
                 status_code = await loop.run_in_executor(
                     None, _urllib_post_json, self.webhook_url, {"embeds": [embed]}, None

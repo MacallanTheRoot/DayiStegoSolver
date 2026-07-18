@@ -38,7 +38,7 @@ from dayi.tools._base import (
 )
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
 from dayi.tools._plugin import (
-    PluginContext, PluginPhase, ToolPlugin, extraction_or_exit_success,
+    PluginContext, PluginPhase, ToolPlugin, extraction_evidence_success,
 )
 
 logger = logging.getLogger("dayi")
@@ -223,7 +223,12 @@ async def run_outguess_bruteforce(
             rc, _, _, _, timed_out = await async_run_command(
                 cmd, BF_TOOL_NAME, timeout_per_attempt
             )
-        if not timed_out and rc == 0 and out_path.exists():
+        if (
+            not timed_out
+            and rc == 0
+            and out_path.is_file()
+            and out_path.stat().st_size > 0
+        ):
             hits = await asyncio.to_thread(scan_file, out_path, flag_pattern)
             return True, hits, password
         return False, [], password
@@ -298,6 +303,7 @@ async def run_outguess_bruteforce(
         flags_found=found_flags,
         elapsed_seconds=elapsed,
         timed_out=False,
+        extraction_succeeded=found_password is not None,
     )
 
 
@@ -341,7 +347,7 @@ PLUGIN_SPECS = (
         priority=20,
         run=_plugin_run_mini,
         requires_mini_wordlist=True,
-        success_evaluator=extraction_or_exit_success,
+        success_evaluator=extraction_evidence_success,
     ),
     ToolPlugin(
         plugin_id="outguess_main_bf",
@@ -350,6 +356,6 @@ PLUGIN_SPECS = (
         run=_plugin_run_main,
         requires_wordlist=True,
         skip_if_phase_succeeded=(PluginPhase.MINI_BRUTE_FORCE,),
-        success_evaluator=extraction_or_exit_success,
+        success_evaluator=extraction_evidence_success,
     ),
 )

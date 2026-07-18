@@ -15,7 +15,7 @@ from dayi.tools._plugin import (
     PluginRegistry,
     ToolPlugin,
     discover_plugins,
-    extraction_or_exit_success,
+    extraction_evidence_success,
 )
 
 
@@ -25,6 +25,7 @@ def _result(
     stdout: str = "",
     flags: list[str] | None = None,
     return_code: int | None = 1,
+    extraction_succeeded: bool = False,
 ) -> ToolResult:
     return ToolResult(
         tool_name=tool_name,
@@ -34,6 +35,7 @@ def _result(
         stderr="",
         flags_found=[] if flags is None else flags,
         elapsed_seconds=0.001,
+        extraction_succeeded=extraction_succeeded,
     )
 
 
@@ -233,7 +235,9 @@ class PluginRunnerTests(unittest.TestCase):
 
         async def primary(context: PluginContext) -> ToolResult:
             calls.append("primary")
-            return _result("primary", return_code=0)
+            return _result(
+                "primary", return_code=0, extraction_succeeded=True
+            )
 
         async def fallback(context: PluginContext) -> ToolResult:
             calls.append("fallback")
@@ -250,7 +254,7 @@ class PluginRunnerTests(unittest.TestCase):
                     PluginPhase.MAIN_PRIMARY,
                     10,
                     primary,
-                    success_evaluator=extraction_or_exit_success,
+                    success_evaluator=extraction_evidence_success,
                 ),
                 ToolPlugin(
                     "fallback",

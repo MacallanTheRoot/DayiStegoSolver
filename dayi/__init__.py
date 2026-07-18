@@ -8,9 +8,9 @@ All heavy imports (runner, tools, integrations) are deferred to avoid
 slowing down simple `import dayi` calls.
 """
 
-__version__  = "3.0.0"
-__author__   = "Dayı Stego Solver"
-__license__  = "MIT"
+__version__ = "3.0.0"
+__author__ = "MacallanTheRoot"
+__license__ = "MIT"
 __description__ = (
     "CTF Steganography Brute-force & Analysis CLI — "
     "'Hallederiz Yeğenim' Edition"

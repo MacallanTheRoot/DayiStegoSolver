@@ -17,7 +17,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 logger = logging.getLogger("dayi")
 
@@ -29,6 +29,17 @@ MAX_SCAN_FILES = 4_096
 MAX_SCAN_DIRECTORY_BYTES = 128 * 1024 * 1024
 MAX_FLAG_REGEX_CHARS = 512
 MAX_FLAG_MATCHES = 1_024
+MAX_BUILTIN_FLAG_CONTENT_CHARS = 256
+BUILTIN_FLAG_PATTERN_DISPLAY = "built-in common CTF patterns"
+
+_BUILTIN_FLAG_REGEX = (
+    r"(?<![A-Za-z0-9_])"
+    r"(?:CTF|FLAG|HTB|picoCTF|THM)"
+    r"\{[^\r\n{}\x00-\x1f\x7f-\x9f]{1,"
+    + str(MAX_BUILTIN_FLAG_CONTENT_CHARS)
+    + r"}\}"
+)
+_BUILTIN_FLAG_PATTERN = re.compile(_BUILTIN_FLAG_REGEX)
 
 _URL_PATTERN = re.compile(r"\bhttps?://[^\s<>\"']{1,2048}", re.IGNORECASE)
 _IPV4_CANDIDATE_PATTERN = re.compile(
@@ -89,6 +100,15 @@ class ArtifactFinding:
     preview: str
     source: str
     decoded_preview: str | None = None
+
+
+@dataclass(frozen=True)
+class FlagPatternConfig:
+    """A compiled flag matcher and stable reporting metadata."""
+
+    compiled: re.Pattern
+    display: str
+    source: Literal["user", "builtin"]
 
 
 def _safe_preview(value: str, limit: int = _PREVIEW_LIMIT) -> str:
@@ -403,3 +423,32 @@ def compile_pattern(flag_regex: str) -> Optional[re.Pattern]:
     except re.error as exc:
         logger.error(f"[scanner] Flag regex deseni geçersiz yeğenim: {exc}")
         return None
+
+
+def compile_user_pattern(flag_regex: str) -> Optional[re.Pattern]:
+    """Compile an untrusted user pattern with the established safety checks."""
+    return compile_pattern(flag_regex)
+
+
+def get_builtin_flag_pattern() -> re.Pattern:
+    """Return the trusted conservative matcher for common CTF flag prefixes."""
+    return _BUILTIN_FLAG_PATTERN
+
+
+def build_flag_pattern_config(flag_regex: str | None) -> FlagPatternConfig | None:
+    """Build user or built-in pattern configuration for one scan."""
+    if flag_regex is None:
+        return FlagPatternConfig(
+            compiled=get_builtin_flag_pattern(),
+            display=BUILTIN_FLAG_PATTERN_DISPLAY,
+            source="builtin",
+        )
+
+    compiled = compile_user_pattern(flag_regex)
+    if compiled is None:
+        return None
+    return FlagPatternConfig(
+        compiled=compiled,
+        display=flag_regex,
+        source="user",
+    )

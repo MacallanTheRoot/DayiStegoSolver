@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["ctf", "steganography", "stego", "security", "forensics", "ctfd", "jeopardy"]
 authors = [
-    { name = "Dayı Stego Solver" }
+    { name = "MacallanTheRoot" }
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -23,7 +23,7 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
 ]
 
 # Core: zero mandatory external dependencies (pure stdlib).
@@ -43,8 +43,8 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 dayi = "dayi.cli:main"
 
 [project.urls]
-Repository  = "https://github.com/your-org/dayi-stego-solver"
-"Bug Tracker" = "https://github.com/your-org/dayi-stego-solver/issues"
+Repository = "https://github.com/MacallanTheRoot/testrepo"
+"Bug Tracker" = "https://github.com/MacallanTheRoot/testrepo/issues"
 
 [tool.setuptools.packages.find]
 where   = ["."]

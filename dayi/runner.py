@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,67 @@ from dayi.tools._plugin import (
 )
 
 MAX_WORKSPACE_RETENTION_ENTRIES = 16_384
+
+
+class WorkspaceConfigurationError(RuntimeError):
+    """Raised when a scan workspace parent cannot be used safely."""
+
+
+def _prepare_workspace_parent(parent: Path) -> Path:
+    """Expand, resolve, and create a custom workspace parent directory."""
+    try:
+        resolved = parent.expanduser().resolve(strict=False)
+        if resolved.exists() and not resolved.is_dir():
+            raise WorkspaceConfigurationError(
+                f"workspace parent is not a directory: {resolved}"
+            )
+        resolved.mkdir(parents=True, exist_ok=True)
+        if not resolved.is_dir():
+            raise WorkspaceConfigurationError(
+                f"workspace parent is not a directory: {resolved}"
+            )
+        return resolved
+    except WorkspaceConfigurationError:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise WorkspaceConfigurationError(
+            f"cannot prepare workspace parent {parent}: {exc}"
+        ) from exc
+
+
+def validate_workspace_parent(parent: Path) -> Path:
+    """Validate a custom parent with an authoritative temporary child probe."""
+    resolved = _prepare_workspace_parent(parent)
+    probe: Path | None = None
+    try:
+        probe = Path(tempfile.mkdtemp(prefix=".dayi_workspace_probe_", dir=resolved))
+        probe.rmdir()
+        return resolved
+    except OSError as exc:
+        if probe is not None:
+            try:
+                probe.rmdir()
+            except OSError:
+                pass
+        raise WorkspaceConfigurationError(
+            f"cannot create a workspace under {resolved}: {exc}"
+        ) from exc
+
+
+def _create_scan_workspace(parent: Path | None) -> Path:
+    """Create one unique runner-owned workspace under a custom or system parent."""
+    try:
+        if parent is None:
+            return Path(tempfile.mkdtemp(prefix="dayi_runner_"))
+        resolved_parent = _prepare_workspace_parent(parent)
+        return Path(tempfile.mkdtemp(prefix="dayi_runner_", dir=resolved_parent))
+    except WorkspaceConfigurationError:
+        raise
+    except OSError as exc:
+        location = "the system temporary directory" if parent is None else str(parent)
+        raise WorkspaceConfigurationError(
+            f"cannot create scan workspace under {location}: {exc}"
+        ) from exc
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -135,6 +197,9 @@ class DayiRunner:
         integration: IntegrationManager | None = None,
         registry: PluginRegistry | None = None,
         ui: TerminalUI | None = None,
+        workspace_parent: Path | None = None,
+        pattern_display: str | None = None,
+        pattern_source: str = "user",
     ) -> None:
         self.target = target
         self.pattern = pattern
@@ -145,6 +210,9 @@ class DayiRunner:
         self.integration = integration
         self.registry = registry if registry is not None else discover_plugins()
         self.ui = ui if ui is not None else create_terminal_ui(logger)
+        self.workspace_parent = workspace_parent
+        self.pattern_display = pattern_display or pattern.pattern
+        self.pattern_source = pattern_source
 
         self._partial_results: list[ToolResult] = []
         self._results_by_plugin: dict[str, ToolResult] = {}
@@ -168,9 +236,12 @@ class DayiRunner:
         self._mini_wordlist.clear()
         self._retained_workspace = None
         self._last_report = None
-        self._workspace = Path(
-            tempfile.mkdtemp(prefix="dayi_runner_", dir=Path.cwd())
-        )
+        try:
+            self._workspace = _create_scan_workspace(self.workspace_parent)
+        except WorkspaceConfigurationError:
+            self._last_report = self._build_report()
+            self._ui_call("close")
+            raise
         cancelled = False
         fatal_error: BaseException | None = None
 
@@ -183,9 +254,23 @@ class DayiRunner:
             )
 
             if mini_succeeded:
+                main_phases = {
+                    PluginPhase.MAIN_PRIMARY,
+                    PluginPhase.MAIN_FALLBACK,
+                    PluginPhase.MAIN_FINAL,
+                }
+                redundant_plugins = tuple(
+                    plugin.plugin_id
+                    for plugin in self.registry.plugins
+                    if plugin.phase in main_phases
+                    and PluginPhase.MINI_BRUTE_FORCE
+                    in plugin.skip_if_phase_succeeded
+                )
                 logger.info(
                     "[runner] 🏆 Mini-wordlist şifreyi buldu! "
-                    "Ana rockyou turunu atlıyorum, böyle olur işte yeğenim!"
+                    "Registry'de mini başarıdan sonra gereksiz ilan edilen "
+                    f"eklentiler çalıştırılmayacak: {', '.join(redundant_plugins) or 'yok'}. "
+                    "Bağımsız ana faz eklentilerini yine değerlendiriyorum yeğenim."
                 )
             await self._run_main_wordlist_phase()
 
@@ -246,31 +331,50 @@ class DayiRunner:
         for result in self._partial_results:
             if result.extracted_dir:
                 declared.append(Path(result.extracted_dir))
-        workspace_root = workspace.resolve()
+        try:
+            workspace_root = workspace.resolve()
+        except (OSError, RuntimeError):
+            return False
         copied_target = workspace / "binwalk" / self.target.name
         for directory in declared:
             try:
+                lexical = Path(os.path.abspath(directory))
+                relative = lexical.relative_to(workspace_root)
+                current = workspace_root
+                if any(
+                    (current := current / part).is_symlink()
+                    for part in relative.parts
+                ):
+                    continue
                 resolved = directory.resolve()
                 if not resolved.is_relative_to(workspace_root) or not resolved.is_dir():
                     continue
                 visited = 0
                 for current, dirs, files in os.walk(resolved, followlinks=False):
-                    dirs[:] = [
-                        name for name in dirs
-                        if not (Path(current) / name).is_symlink()
-                    ]
+                    safe_dirs: list[str] = []
+                    for name in dirs:
+                        visited += 1
+                        if visited > MAX_WORKSPACE_RETENTION_ENTRIES:
+                            return False
+                        if not (Path(current) / name).is_symlink():
+                            safe_dirs.append(name)
+                    dirs[:] = safe_dirs
                     for name in files:
                         visited += 1
                         if visited > MAX_WORKSPACE_RETENTION_ENTRIES:
                             return False
                         candidate = Path(current) / name
-                        if candidate.is_symlink() or not candidate.is_file():
+                        try:
+                            file_stat = candidate.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        if not stat.S_ISREG(file_stat.st_mode):
                             continue
                         if candidate == copied_target:
                             continue
-                        if candidate.stat().st_size > 0:
+                        if file_stat.st_size > 0:
                             return True
-            except OSError:
+            except (OSError, RuntimeError, ValueError):
                 continue
         return False
 
@@ -349,14 +453,28 @@ class DayiRunner:
         plugins = self.registry.for_phase(phase)
         if not plugins:
             return False
+        initial_reasons = tuple(
+            self._plugin_skip_reason(plugin) for plugin in plugins
+        )
+        if all(reason is not None for reason in initial_reasons):
+            for plugin, reason in zip(plugins, initial_reasons, strict=True):
+                logger.debug(f"[runner] {plugin.plugin_id} atlandı: {reason}")
+                self._ui_call("plugin_finished", plugin.plugin_id, "skipped")
+            logger.info(
+                f"[runner] {phase.name} fazında çalışacak eklenti kalmadı; "
+                "kayıtlı atlama kurallarını uyguladım yeğenim."
+            )
+            return phase in self._successful_phases
         self._ui_call(
             "phase_started",
             phase.name,
             tuple(plugin.plugin_id for plugin in plugins),
         )
         try:
-            for plugin in plugins:
-                reason = self._plugin_skip_reason(plugin)
+            for plugin, initial_reason in zip(
+                plugins, initial_reasons, strict=True
+            ):
+                reason = initial_reason or self._plugin_skip_reason(plugin)
                 if reason is not None:
                     logger.debug(
                         f"[runner] {plugin.plugin_id} atlandı: {reason}"
@@ -677,7 +795,7 @@ class DayiRunner:
 
         return ScanReport(
             target_file=str(self.target.resolve()),
-            flag_pattern=self.pattern.pattern,
+            flag_pattern=self.pattern_display,
             wordlist=str(self.wordlist) if self.wordlist else None,
             started_at=self._started_at or datetime.now(timezone.utc).isoformat(),
             finished_at=datetime.now(timezone.utc).isoformat(),
@@ -689,4 +807,5 @@ class DayiRunner:
                 if self._retained_workspace is not None
                 else None
             ),
+            flag_pattern_source=self.pattern_source,
         )

@@ -31,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from dayi import __version__
 from dayi.scanner import ArtifactFinding
 
 logger = logging.getLogger("dayi")
@@ -57,6 +58,7 @@ class ToolResult:
     extracted_dir: str | None = None
     extracted_flags: dict[str, list[str]] = field(default_factory=dict)
     artifacts_found: list[ArtifactFinding] = field(default_factory=list)
+    extraction_succeeded: bool = False
 
 
 @dataclass
@@ -71,6 +73,7 @@ class ScanReport:
     tool_results: list[ToolResult]
     all_artifacts: list[ArtifactFinding] = field(default_factory=list)
     retained_workspace: str | None = None
+    flag_pattern_source: str = "user"
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +173,7 @@ def _build_notes_text(report: ScanReport) -> str:
         sep,
         f"  Hedef Dosya : {report.target_file}",
         f"  Flag Regex  : {report.flag_pattern}",
+        f"  Desen Kaynağı: {report.flag_pattern_source}",
         f"  Wordlist    : {report.wordlist or 'Belirtilmedi'}",
         f"  Başlangıç   : {report.started_at}",
         f"  Bitiş       : {report.finished_at}",
@@ -431,6 +435,7 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
         separator,
         f"  Hedef Dosya : {report.target_file}",
         f"  Flag Regex  : {report.flag_pattern}",
+        f"  Desen Kaynağı: {report.flag_pattern_source}",
         f"  Wordlist    : {report.wordlist or 'Belirtilmedi'}",
         f"  Başlangıç   : {report.started_at}",
         f"  Bitiş       : {report.finished_at}",
@@ -452,6 +457,13 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
         lines += ["", "🔎  SONRAKİ AŞAMA OLABİLECEK ARTIFACT/IPUÇLARI:"]
         for finding in report.all_artifacts:
             lines.append(f"    → {_format_artifact(finding)}")
+
+    if report.retained_workspace:
+        lines += [
+            "",
+            f"📁  Korunan çalışma alanı: {report.retained_workspace}",
+            "    Uyarı: Çıkarılan dosyalar güvenilmeyen içeriktir.",
+        ]
 
     lines += ["", separator, "  ARAÇ SONUÇLARI", separator, ""]
 
@@ -531,9 +543,10 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
 
     payload: dict[str, Any] = {
         "meta": {
-            "tool":         "Dayı Stego Solver v3.0",
+            "tool":         f"Dayı Stego Solver v{__version__}",
             "target_file":  report.target_file,
             "flag_pattern": report.flag_pattern,
+            "flag_pattern_source": report.flag_pattern_source,
             "wordlist":     report.wordlist,
             "started_at":   report.started_at,
             "finished_at":  report.finished_at,
@@ -541,6 +554,7 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
         "all_flags_found":  report.all_flags,
         "flag_attribution": attribution,
         "artifacts_found":  [_artifact_to_dict(item) for item in report.all_artifacts],
+        "retained_workspace": report.retained_workspace,
         "tool_results":     [_tool_to_dict(tr) for tr in report.tool_results],
     }
 
