@@ -5,6 +5,7 @@
 ### *"Hallederiz yeğenim." — The Uncle who always finds the flag.*
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
+[![CI](https://github.com/MacallanTheRoot/testrepo/actions/workflows/ci.yml/badge.svg)](https://github.com/MacallanTheRoot/testrepo/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/Version-3.0.0-success)](https://github.com/MacallanTheRoot/testrepo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/Core%20Deps-Zero%20%28stdlib%29-brightgreen)](pyproject.toml)
@@ -413,6 +414,9 @@ DayiStegoSolver/
 pip install -e ".[dev]"
 python -m pytest tests/ -v
 
+# Full local CI parity: tests, static checks, build, and archive validation
+./scripts/check.sh
+
 # No pytest? Quick sanity:
 python -c "from dayi.cli import build_arg_parser; print('OK')"
 dayi --help
@@ -709,6 +713,9 @@ dayi stego.png --flag "CTF{.*?}" --writeup cozum.md
 ---
 
 ### 🤝 Katkı
+
+CI ile aynı test, statik kontrol, paket build ve arşiv doğrulama zincirini yerelde
+çalıştırmak için geliştirme extra'sını kurup `./scripts/check.sh` komutunu kullanın.
 
 PR'lar bekliyorum. Kurallar basit:
 
