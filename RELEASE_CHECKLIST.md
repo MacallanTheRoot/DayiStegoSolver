@@ -1,8 +1,8 @@
 # Dayı Stego Solver 4.0.0 Release Checklist
 
-This checklist prepares the 2026-07-18 release. Until the final release-status
-commit is made, it does not record a completed tag, GitHub release, or package
-publication.
+This checklist records verification and publication steps for the 2026-07-18
+release. Tag, asset, and GitHub Release items remain unchecked until each action
+is completed and verified.
 
 ## Pre-release
 

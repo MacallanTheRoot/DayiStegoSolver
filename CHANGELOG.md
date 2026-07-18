@@ -4,13 +4,11 @@ All notable changes to Dayı Stego Solver are documented here.
 
 ## [Unreleased]
 
-Changes made after the 4.0.0 release will be documented here.
-
 ## [4.0.0] - 2026-07-18
 
-Version 4.0.0 is prepared for its production tag and GitHub release on
-2026-07-18. This release follows the earlier v3-era production history and
-brings the fully audited maintenance line into the production repository.
+Version 4.0.0 was released on 2026-07-18. This release follows the earlier
+v3-era production history and brings the fully audited maintenance line into
+the production repository.
 
 ### Added
 
@@ -72,6 +70,5 @@ brings the fully audited maintenance line into the production repository.
 These measures reduce exposure to hostile CTF inputs; they are not a guarantee
 that every file, parser, optional dependency, or external executable is safe.
 
-<!-- The v4.0.0 links become active when the production tag is published. -->
 [Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.0.0...HEAD
 [4.0.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.0.0

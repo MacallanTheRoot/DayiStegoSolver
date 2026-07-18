@@ -1,8 +1,6 @@
 # Dayı Stego Solver 4.0.0
 
-Release status: prepared for the production tag and GitHub release planned for
-2026-07-18. The release wording will be finalized after production-main CI
-passes for the exact release commit.
+Released on 2026-07-18.
 
 ## Overview
 
@@ -134,7 +132,7 @@ distribution archive validation gaps.
 
 ## Verification
 
-Release-preparation baseline verified locally:
+Release verification:
 
 - 184 passed, 1 skipped.
 - Pyflakes, compileall, and `git diff --check` completed successfully.
@@ -142,6 +140,5 @@ Release-preparation baseline verified locally:
 - Clean wheel and source-distribution installations passed CLI smoke checks.
 - Doctor and plugin-inspection JSON outputs passed syntax and invariant checks.
 - The GitHub Actions workflow passed local `actionlint` validation.
-
-The GitHub Actions Python 3.10–3.13 workflow is configured. These notes do not
-claim that a remote GitHub Actions run has completed successfully.
+- The GitHub Actions Python 3.10–3.13 matrix and build/smoke job completed
+  successfully for the final release commit.

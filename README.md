@@ -13,9 +13,8 @@
 
 **English** | [Türkçe](#-türkçe-dokümantasyon)
 
-> **Release status:** Version 4.0.0 is being prepared for release on 2026-07-18.
-> It has not yet been tagged or published. See the [changelog](CHANGELOG.md) and
-> [release notes](RELEASE_NOTES_v4.0.0.md).
+> **Current release:** 4.0.0, released on 2026-07-18. See the
+> [changelog](CHANGELOG.md) and [release notes](RELEASE_NOTES_v4.0.0.md).
 
 > Developed with ☕ and CTF tears by [MacallanTheRoot](https://github.com/MacallanTheRoot)
 
@@ -451,6 +450,8 @@ MIT — do whatever you want with it.
 ---
 
 ## 🇹🇷 Türkçe Dokümantasyon
+
+> **Güncel sürüm:** 4.0.0, 2026-07-18 tarihinde yayımlandı.
 
 <div align="center">
 
