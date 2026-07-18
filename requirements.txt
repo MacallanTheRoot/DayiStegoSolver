@@ -1,0 +1,3 @@
+# Dayı Stego Solver — Python dependencies
+# Pure-stdlib implementation. No PyPI packages required.
+# External system tools must be installed separately (see README.md).

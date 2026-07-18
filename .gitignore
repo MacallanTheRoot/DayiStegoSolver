@@ -1,0 +1,105 @@
+# ============================================================
+# Dayı Stego Solver — .gitignore
+# ============================================================
+
+# ── Python Runtime ───────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+*.whl
+MANIFEST
+
+# ── Virtual Environments ─────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env.bak
+.venv.bak
+
+# ── Secrets & Environment Files ─────────────────────────────
+.env
+.env.*
+!.env.example
+*.token
+*.key
+ctfd_token.txt
+
+# ── CTFd / ctfshit Workspace Artifacts ───────────────────────
+.challenge.json
+flags.csv
+.ctf_config.json
+ctf_workspace/
+workspace/
+
+# ── Dayı Scan Outputs ────────────────────────────────────────
+dayi_rapor*
+writeup*.md
+*_rapor.txt
+*_rapor.json
+*.stegout
+
+# ── Wordlists (large — never commit to VCS) ──────────────────
+*.wordlist
+rockyou.txt
+rockyou*.txt
+wordlists/
+passwords/
+*.lst
+
+# ── Binwalk Extraction Artifacts ─────────────────────────────
+_*.extracted/
+*.extracted/
+dayi_binwalk_*/
+
+# ── Steghide / Stegseek Outputs ──────────────────────────────
+*.out
+steghide_extracted/
+stegseek_extracted/
+
+# ── Write-up Temp Directories ────────────────────────────────
+dayi_writeup_*/
+/tmp/dayi_*
+
+# ── IDE / Editor ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Testing & Coverage ───────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+test_output/
+
+# ── Jupyter ──────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Type Checkers ────────────────────────────────────────────
+.mypy_cache/
+.pytype/
+.pyre/
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+dayi_*.log
+
+# ctfshit — separate repo, not bundled
+ctfshit/
