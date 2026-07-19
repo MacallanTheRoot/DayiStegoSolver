@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable, Sequence
 
 EXPECTED_NAME = "dayi-stego-solver"
-EXPECTED_VERSION = "4.0.0"
+EXPECTED_VERSION = "4.1.0"
 EXPECTED_AUTHOR = "MacallanTheRoot"
 EXPECTED_REQUIRES_PYTHON = ">=3.10"
 EXPECTED_ENTRY_POINT = "dayi = dayi.cli:main"
@@ -22,6 +22,7 @@ EXPECTED_URLS = {
 
 WHEEL_REQUIRED = {
     "dayi/__init__.py",
+    "dayi/__main__.py",
     "dayi/cli.py",
     "dayi/doctor.py",
     "dayi/plugin_inspector.py",

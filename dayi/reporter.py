@@ -6,7 +6,7 @@ Report generation: writes analysis results as TXT, JSON, or Markdown (v3.0).
 v3.0 Addition — export_markdown_writeup():
     Converts a ScanReport into a professional Markdown writeup by constructing
     a minimal mock CTF workspace in a temporary directory and delegating to
-    ctfshit.src.writeup_exporter.export_writeups().
+    the optional ctfshit writeup exporter.
 
     Mock workspace layout (inside a TemporaryDirectory):
         <tmpdir>/
@@ -15,7 +15,7 @@ v3.0 Addition — export_markdown_writeup():
             └── notes.txt         ← Full scan findings (tools, flags, stdout)
 
     Library resolution:
-        1. ctfshit.src.writeup_exporter.export_writeups() — rich Markdown with
+        1. The ctfshit resolver — rich Markdown with
            category grouping, timestamps, and solve.py/notes.txt embedding.
         2. Fallback (ctfshit unavailable): a hand-written Markdown generator
            that produces a clean, concise writeup from the ScanReport directly.
@@ -32,9 +32,12 @@ from pathlib import Path
 from typing import Any
 
 from dayi import __version__
+from dayi.ctfshit_resolver import resolve_writeup_exporter
 from dayi.scanner import ArtifactFinding
 
 logger = logging.getLogger("dayi")
+
+_DAYI_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
@@ -227,22 +230,6 @@ def _build_notes_text(report: ScanReport) -> str:
 # Markdown writeup export (v3.0)
 # ---------------------------------------------------------------------------
 
-# Dynamic import of ctfshit — resolved once at function call time so that
-# the module can be installed after the tool is imported without restarting.
-def _try_import_writeup_exporter():
-    """
-    Attempt to import ctfshit.src.writeup_exporter.export_writeups.
-
-    Returns:
-        The export_writeups callable, or None if ctfshit is unavailable.
-    """
-    try:
-        from ctfshit.src.writeup_exporter import export_writeups  # type: ignore[import]
-        return export_writeups
-    except ImportError:
-        return None
-
-
 def _fallback_markdown(report: ScanReport, output_path: Path) -> None:
     """
     Generate a minimal Markdown writeup without ctfshit.
@@ -309,16 +296,21 @@ def _fallback_markdown(report: ScanReport, output_path: Path) -> None:
     logger.info(f"[reporter] Yedek Markdown write-up yazıldı → {output_path}")
 
 
-def export_markdown_writeup(report: ScanReport, output_md_path: Path) -> None:
+def export_markdown_writeup(
+    report: ScanReport,
+    output_md_path: Path,
+    *,
+    ctfshit_path: Path | str | None = None,
+) -> None:
     """
     Convert a ScanReport into a professional Markdown writeup document.
 
     Strategy:
-        1. Attempt to import ctfshit.src.writeup_exporter.export_writeups.
+        1. Resolve the optional ctfshit exporter.
         2. If available: build a minimal mock CTF workspace in a TemporaryDirectory
            containing a .challenge.json and notes.txt, then call export_writeups()
            to produce a rich, consistently-formatted Markdown document.
-        3. If unavailable (ImportError): fall back to _fallback_markdown(), which
+        3. If unavailable: fall back to _fallback_markdown(), which
            produces a clean Markdown writeup directly from the ScanReport.
 
     The temporary directory is always cleaned up in a finally block.
@@ -327,13 +319,37 @@ def export_markdown_writeup(report: ScanReport, output_md_path: Path) -> None:
         report:        Populated ScanReport from the completed scan.
         output_md_path: Destination path for the Markdown file (e.g. writeup.md).
                         Parent directories are created automatically.
+        ctfshit_path:  Optional authoritative ctfshitcli checkout path.
     """
-    export_writeups = _try_import_writeup_exporter()
+    try:
+        resolution = resolve_writeup_exporter(
+            explicit_path=ctfshit_path,
+            project_root=_DAYI_PROJECT_ROOT,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[reporter] ctfshit exporter çözümlenemedi (%s); "
+            "yerleşik Markdown çıktısı kullanılıyor.",
+            type(exc).__name__,
+        )
+        _fallback_markdown(report, output_md_path)
+        return
 
-    if export_writeups is None:
-        logger.info(
-            "[reporter] ctfshit bulunamadı, yedek Markdown moduna geçiyorum. "
-            "Makaleni el yapımı yazıyorum yeğenim, fabrika değil ama sağlamdır!"
+    export_writeups = resolution.exporter
+    if not resolution.available or not callable(export_writeups):
+        log_unavailable = (
+            logger.warning
+            if resolution.source_kind == "explicit-path"
+            else logger.info
+        )
+        log_unavailable(
+            "[reporter] Zengin ctfshit exporter kullanılamıyor; "
+            "yerleşik Markdown çıktısı kullanılıyor."
+        )
+        logger.debug(
+            "[reporter] ctfshit resolver sonucu: %s (%s)",
+            resolution.status_code,
+            resolution.safe_detail,
         )
         _fallback_markdown(report, output_md_path)
         return
@@ -404,9 +420,10 @@ def export_markdown_writeup(report: ScanReport, output_md_path: Path) -> None:
                 _fallback_markdown(report, output_md_path)
 
         except Exception as exc:
-            logger.error(
-                f"[reporter] writeup_exporter çöktü ({exc}). "
-                "Yedek Markdown yazıyorum, panik yok yeğenim!"
+            logger.warning(
+                "[reporter] ctfshit exporter başarısız (%s); "
+                "yerleşik Markdown çıktısı kullanılıyor.",
+                type(exc).__name__,
             )
             _fallback_markdown(report, output_md_path)
         # TemporaryDirectory __exit__ cleans up tmp_root automatically here

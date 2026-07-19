@@ -118,6 +118,15 @@ _ARTIFACT_LABELS: dict[str, str] = {
     "coordinates_dms": "DMS koordinatı",
 }
 
+_STEGSEEK_SELF_URL = "https://github.com/RickdeJager/StegSeek"
+
+
+def _artifact_scan_content(tool_name: str, content: str) -> str:
+    """Exclude StegSeek-owned boilerplate only from its artifact scan copy."""
+    if tool_name == "stegseek":
+        return content.replace(_STEGSEEK_SELF_URL, "")
+    return content
+
 
 def _decode_hex_ascii(token: str) -> str | None:
     """Decode an even-length hexadecimal token into printable ASCII."""
@@ -643,11 +652,22 @@ class DayiRunner:
         self._attach_artifacts(result)
         if self.integration:
             for flag in result.flags_found:
-                self.integration.notify(flag, result.tool_name)
+                self._notify_safely(flag, result.tool_name)
             for extracted_hits in result.extracted_flags.values():
                 for flag in extracted_hits:
-                    self.integration.notify(flag, result.tool_name)
+                    self._notify_safely(flag, result.tool_name)
         return result
+
+    def _notify_safely(self, flag: str, tool_name: str) -> None:
+        """Keep ordinary optional-notification setup failures out of scans."""
+        if self.integration is None:
+            return
+        try:
+            self.integration.notify(flag, tool_name)
+        except Exception:
+            logger.warning(
+                "[runner] Bildirim görevi başlatılamadı; tarama devam ediyor."
+            )
 
     async def _run_and_track(
         self,
@@ -721,7 +741,9 @@ class DayiRunner:
             if remaining <= 0:
                 break
             for finding in scan_artifacts(
-                content, source=source, max_findings=remaining
+                _artifact_scan_content(result.tool_name, content),
+                source=source,
+                max_findings=remaining,
             ):
                 key = (
                     finding.artifact_type,
