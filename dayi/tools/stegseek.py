@@ -75,7 +75,9 @@ async def run_stegseek(
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
         fmt_label = describe_file_type(file_type)
-        skip_reason = f"stegseek requires JPEG/BMP/WAV; detected format: {file_type}"
+        skip_reason = (
+            f"stegseek requires JPEG/BMP/WAV; detected format: {file_type.name}"
+        )
         logger.info(
             f"[-] Yeğenim bu dosya {fmt_label} formatında, "
             f"stegseek buna yaramaz, boşuna yormayalım aleti. Atlıyorum..."

@@ -9,6 +9,7 @@ from dayi.persona import TerminalUI
 from dayi.reporter import ToolResult, write_json_report
 from dayi.runner import DayiRunner
 from dayi.scanner import scan_artifacts
+from dayi.tools._base import FileType
 from dayi.tools._plugin import PluginPhase, discover_plugins, extraction_evidence_success
 from dayi.tools.stegseek import PLUGIN_SPECS, run_stegseek
 
@@ -69,10 +70,27 @@ class StegseekEligibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.skipped)
         self.assertEqual(
             result.skip_reason,
-            "stegseek requires JPEG/BMP/WAV; detected format: FileType.UNKNOWN",
+            "stegseek requires JPEG/BMP/WAV; detected format: UNKNOWN",
         )
         command.assert_not_called()
         command.assert_not_awaited()
+
+    async def test_skip_reason_does_not_use_runtime_enum_string_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "target.bin"
+            target.write_bytes(b"plain text\n")
+
+            with patch.object(
+                FileType,
+                "__str__",
+                return_value="runtime-dependent-enum-string",
+            ):
+                result, _ = await self._run_with_mocked_command(target)
+
+        self.assertEqual(
+            result.skip_reason,
+            "stegseek requires JPEG/BMP/WAV; detected format: UNKNOWN",
+        )
 
     async def test_misleading_jpg_extensions_are_skipped(self) -> None:
         fixtures = {
@@ -122,7 +140,7 @@ class StegseekEligibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.extraction_succeeded)
         self.assertEqual(
             result.skip_reason,
-            "stegseek requires JPEG/BMP/WAV; detected format: FileType.PNG",
+            "stegseek requires JPEG/BMP/WAV; detected format: PNG",
         )
 
     async def test_unsupported_input_does_not_enter_subprocess_boundary(self) -> None:

@@ -82,7 +82,7 @@ async def run_outguess(
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
         fmt_label = describe_file_type(file_type)
-        skip_reason = f"outguess requires JPEG; detected format: {file_type}"
+        skip_reason = f"outguess requires JPEG; detected format: {file_type.name}"
         logger.info(
             f"[-] Yeğenim bu dosya {fmt_label} formatında, "
             f"outguess sadece JPEG'e bakar, boşuna yormayalım aleti. Atlıyorum..."
@@ -174,7 +174,7 @@ async def run_outguess_bruteforce(
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
         fmt_label = describe_file_type(file_type)
-        skip_reason = f"outguess_bf requires JPEG; detected format: {file_type}"
+        skip_reason = f"outguess_bf requires JPEG; detected format: {file_type.name}"
         logger.info(
             f"[-] Yeğenim bu dosya {fmt_label}, outguess brute-force'u atlıyorum..."
         )
