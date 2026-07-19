@@ -5,7 +5,7 @@ Entry point for the Dayı Stego Solver CLI — v3.0.
 
 New in v3.0:
   --writeup  : Generate an automatic Markdown writeup after the scan.
-               Integrates with ctfshit.src.writeup_exporter if available;
+               Integrates with the optional ctfshit exporter if available;
                falls back to a built-in Markdown generator otherwise.
 
 New in v2.0:
@@ -27,6 +27,7 @@ GRACEFUL SHUTDOWN: KeyboardInterrupt → asyncio task cancelled → integration
 """
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -177,38 +178,42 @@ def _build_scan_parent_parser() -> argparse.ArgumentParser:
         "--webhook",
         metavar="URL",
         type=str,
-        default="",
+        default=None,
         help=(
             "Discord incoming webhook URL. "
-            "Bulunan her flag için embed mesaj gönderir."
+            "Bulunan her flag için embed mesaj gönderir. Gizli değerler için "
+            "DAYI_DISCORD_WEBHOOK_URL kullanılması önerilir."
         ),
     )
     integration_group.add_argument(
         "--ctfd-url",
         metavar="URL",
         type=str,
-        default="",
+        default=None,
         help="CTFd platform URL (örn: https://ctf.example.com). Flag otomatik gönderilir.",
     )
     integration_group.add_argument(
         "--ctfd-token",
         metavar="TOKEN",
         type=str,
-        default="",
-        help="CTFd API token (Profil → API Token sayfasından alınır).",
+        default=None,
+        help=(
+            "CTFd API token (Profil → API Token sayfasından alınır). Gizli değerler "
+            "için DAYI_CTFD_TOKEN kullanılması önerilir."
+        ),
     )
     integration_group.add_argument(
         "--challenge-id",
         metavar="ID",
         type=int,
-        default=0,
+        default=None,
         help="CTFd challenge ID'si. Flag bu challenge'a karşı gönderilir.",
     )
     integration_group.add_argument(
         "--challenge-name",
         metavar="NAME",
         type=str,
-        default="Dayı Auto-Solve",
+        default=None,
         help="Challenge adı (Discord embed'de görünür). Varsayılan: 'Dayı Auto-Solve'",
     )
 
@@ -225,6 +230,16 @@ def _build_scan_parent_parser() -> argparse.ArgumentParser:
         help=(
             "Otomatik Markdown write-up dosyasının kaydedileceği yol. "
             "Örn: writeup.md — ctfshit varsa zengin format, yoksa yedek format kullanılır."
+        ),
+    )
+    writeup_group.add_argument(
+        "--ctfshit-path",
+        metavar="PATH",
+        type=Path,
+        default=None,
+        help=(
+            "İsteğe bağlı ctfshitcli checkout yolu. Verilmezse "
+            "DAYI_CTFSHIT_PATH ve otomatik çözümleme kullanılır."
         ),
     )
 
@@ -278,6 +293,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Tanı sonucunu kararlı JSON olarak stdout'a yaz",
     )
+    doctor_parser.add_argument(
+        "--ctfshit-path",
+        metavar="PATH",
+        type=Path,
+        default=None,
+        help=(
+            "Doctor için isteğe bağlı ctfshitcli checkout yolu. Verilmezse "
+            "DAYI_CTFSHIT_PATH ve otomatik çözümleme kullanılır."
+        ),
+    )
     doctor_parser.set_defaults(command="doctor")
     plugins_parser = subparsers.add_parser(
         "plugins",
@@ -326,6 +351,17 @@ def parse_cli_args(
     active_parser = parser if parser is not None else build_arg_parser()
     raw_args = list(sys.argv[1:] if argv is None else argv)
     return active_parser.parse_args(normalize_cli_argv(raw_args))
+
+
+def _select_ctfshit_path(cli_path: Path | None) -> tuple[Path | None, str | None]:
+    """Select one authoritative explicit ctfshit checkout path."""
+    if cli_path is not None:
+        return cli_path, "cli"
+
+    environment_value = os.environ.get("DAYI_CTFSHIT_PATH")
+    if environment_value is None or not environment_value.strip():
+        return None, None
+    return Path(environment_value.strip()), "environment"
 
 
 async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | None, int]:
@@ -403,9 +439,16 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
         f"[*] Workspace üstü: {workspace_parent or 'Sistem geçici dizini'}"
     )
     if integration:
-        logger.info(f"[*] CTFd URL      : {args.ctfd_url or 'Devre dışı'}")
-        logger.info(f"[*] Webhook       : {'Aktif' if args.webhook else 'Devre dışı'}")
-        logger.info(f"[*] Challenge ID  : {args.challenge_id or 'Belirtilmedi'}")
+        channels = getattr(integration, "configured_channels", ())
+        if not isinstance(channels, tuple):
+            channels = ()
+        logger.info(f"[*] CTFd          : {'Aktif' if 'ctfd' in channels else 'Devre dışı'}")
+        logger.info(
+            f"[*] Webhook       : {'Aktif' if 'discord' in channels else 'Devre dışı'}"
+        )
+        logger.info(
+            f"[*] Challenge ID  : {'Yapılandırıldı' if 'ctfd' in channels else 'Belirtilmedi'}"
+        )
     logger.info("")
 
     runner = DayiRunner(
@@ -469,8 +512,17 @@ async def async_main(args: argparse.Namespace) -> int:
             writeup_path: Path = args.writeup
             if writeup_path.suffix.lower() != ".md":
                 writeup_path = writeup_path.with_suffix(".md")
+            ctfshit_path, ctfshit_source = _select_ctfshit_path(args.ctfshit_path)
+            if ctfshit_source == "cli":
+                logger.debug("[*] Açık ctfshit yolu seçildi.")
+            elif ctfshit_source == "environment":
+                logger.debug("[*] DAYI_CTFSHIT_PATH seçildi.")
             logger.info("[*] Write-up hazırlanıyor... Dayı kalemini eline aldı yeğenim!")
-            export_markdown_writeup(report, writeup_path)
+            export_markdown_writeup(
+                report,
+                writeup_path,
+                ctfshit_path=ctfshit_path,
+            )
 
     return exit_code
 
@@ -490,7 +542,11 @@ def main() -> None:
         raise  # Let argparse handle --help and genuine errors normally
 
     if args.command == "doctor":
-        report = run_diagnostics()
+        ctfshit_path, ctfshit_source = _select_ctfshit_path(args.ctfshit_path)
+        report = run_diagnostics(
+            ctfshit_path=ctfshit_path,
+            ctfshit_path_source=ctfshit_source,
+        )
         rendered = render_json(report) if args.json_output else render_plain(report)
         print(rendered)
         sys.exit(doctor_exit_code(report))

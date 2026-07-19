@@ -4,6 +4,59 @@ All notable changes to Dayı Stego Solver are documented here.
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-07-19
+
+### Added
+
+- Added a safe optional resolver for the `csl-ctfshitcli` rich Markdown
+  exporter, including `--ctfshit-path` and `DAYI_CTFSHIT_PATH` selection.
+- Added native CTFd and Discord delivery with field-specific notification
+  environment variables.
+- Added network-free doctor diagnostics for native notification transport and
+  local channel configuration.
+- Added `python -m dayi` as a package entry point.
+- Added deterministic resolver, notification, doctor, security,
+  documentation, and distribution tests.
+
+### Changed
+
+- Changed StegSeek eligibility to use detected JPEG/BMP/WAV carrier content
+  instead of filename extensions.
+- Limited ctfshit integration to rich writeup export; notification delivery is
+  now entirely native.
+- Made CTFd and Discord delivery independent so one channel cannot retry or
+  suppress the other.
+- Applied CLI-over-environment precedence independently to each notification
+  setting.
+- Corrected the English and Turkish README integration documentation.
+- Separated ctfshit writeup and native notification capabilities in doctor
+  output.
+
+### Security
+
+- Blocked redirects and added bounded total, connection, and read timeouts for
+  notification requests.
+- Bounded CTFd response reads and rejected malformed, oversized, or structurally
+  invalid responses.
+- Added strict network-free URL validation for schemes, hostnames, userinfo,
+  query strings, fragments, and duplicated CTFd submission paths.
+- Kept credentials, endpoint details, response bodies, and delivery exceptions
+  out of logs, reports, doctor output, and `DeliveryResult` values.
+- Added resolver checks for checkout boundaries, distribution ownership,
+  symlinks, and isolated module loading.
+- Limited StegSeek's project-URL suppression to artifact-scanning copies of its
+  stdout and stderr.
+
+### Fixed
+
+- Removed invalid legacy ctfshit notification imports.
+- Prevented an HTTP 200 CTFd response with an incorrect submission status from
+  being treated as success.
+- Fixed the missing module entry point for `python -m dayi`.
+- Prevented renamed unsupported files from invoking StegSeek.
+- Contained ordinary notification failures so completed scans and their exit
+  codes remain valid.
+
 ## [4.0.0] - 2026-07-18
 
 Version 4.0.0 was released on 2026-07-18. This release follows the earlier
@@ -70,5 +123,6 @@ the production repository.
 These measures reduce exposure to hostile CTF inputs; they are not a guarantee
 that every file, parser, optional dependency, or external executable is safe.
 
-[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.0.0

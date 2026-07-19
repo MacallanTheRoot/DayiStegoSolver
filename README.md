@@ -6,15 +6,16 @@
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![CI](https://github.com/MacallanTheRoot/DayiStegoSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/MacallanTheRoot/DayiStegoSolver/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/Version-4.0.0-success)](https://github.com/MacallanTheRoot/DayiStegoSolver)
+[![Version](https://img.shields.io/badge/Version-4.1.0-success)](https://github.com/MacallanTheRoot/DayiStegoSolver)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/Core%20Deps-Zero%20%28stdlib%29-brightgreen)](pyproject.toml)
 [![Async](https://img.shields.io/badge/asyncio-gather-blue)](dayi/runner.py)
 
 **English** | [Türkçe](#-türkçe-dokümantasyon)
 
-> **Current release:** 4.0.0, released on 2026-07-18. See the
-> [changelog](CHANGELOG.md) and [release notes](RELEASE_NOTES_v4.0.0.md).
+> **Current development version:** 4.1.0. Release preparation is documented in
+> the [changelog](CHANGELOG.md); the latest published
+> [release notes](RELEASE_NOTES_v4.0.0.md) remain 4.0.0.
 
 > Developed with ☕ and CTF tears by [MacallanTheRoot](https://github.com/MacallanTheRoot)
 
@@ -86,8 +87,8 @@ All four modules skip cleanly when their optional runtime is absent; the default
 | 🧹 | **Zombie-safe subprocess** | SIGTERM → 2s grace → SIGKILL → `wait_for(5s)`. Stuck processes don't linger. |
 | 🔒 | **OOM-safe wordlists** | rockyou.txt is streamed line-by-line. 134MB never hits RAM as a whole. |
 | 🛡️ | **Token sanitization** | Strips null bytes and control chars before handing tokens to steghide subprocess args. |
-| 🧩 | **ctfshit integration** | Drop ctfshit in the project root. Dayı finds it automatically. No config needed. |
-| 🔄 | **3-tier HTTP fallback** | ctfshit → aiohttp → stdlib urllib. Notifications go out regardless of what's installed. |
+| 🧩 | **ctfshit writeup integration** | Optionally uses the `csl-ctfshitcli` exporter for rich Markdown; the built-in Markdown fallback is always available. |
+| 🔄 | **Native notification transport** | Selects usable aiohttp once, otherwise stdlib urllib; CTFd and Discord delivery remain independent. |
 | 🗂️ | **Flag attribution** | Report says `CTF{flag} ← found by: exiftool, binwalk`. Useful. |
 | ⌨️ | **Ctrl+C safe** | Hit interrupt anytime. Partial results are written. Nothing is lost. |
 
@@ -159,7 +160,7 @@ pip install -e ".[ole]"
 # Streaming PCAP/PCAPNG network forensics (optional)
 pip install -e ".[pcap]"
 
-# Tier-2 Discord/CTFd fallback (if you're not using ctfshit)
+# Preferred native Discord/CTFd transport (stdlib urllib remains available)
 pip install -e ".[integration]"
 
 dayi --help
@@ -172,7 +173,9 @@ requests. External tools are format-specific and optional; missing ones do not
 prevent basic use. Exit code `0` means the core CLI remains usable, including a
 degraded result with optional components missing. Exit code `1` means the core
 installation is unhealthy. Use `dayi doctor --json` for deterministic CI or
-script output.
+script output. Native notification diagnostics report the locally selected
+aiohttp/urllib transport and safe CTFd/Discord configuration states. Doctor does
+not contact endpoints or test credentials and never prints their values.
 
 **System tools (Kali/Debian/Ubuntu):**
 
@@ -188,14 +191,21 @@ wget https://github.com/RickdeJager/stegseek/releases/latest/download/stegseek_l
 sudo dpkg -i stegseek_linux.deb
 ```
 
-**ctfshit integration (optional):**
+**ctfshit rich writeup export (optional):**
 
 ```bash
-# Clone it as a sibling directory — Dayı auto-detects it at runtime
-git clone https://github.com/MacallanTheRoot/ctfshit ctfshit/
+# Use a validated local ctfshitcli checkout without installing it
+export DAYI_CTFSHIT_PATH=../ctfshitcli
+
+# Or install the csl-ctfshitcli distribution from that checkout
+python -m pip install -e ../ctfshitcli
 ```
 
-No config file. No env vars. If `ctfshit/src/*.py` is importable, it gets used.
+The resolver prefers an explicit `--ctfshit-path` or `DAYI_CTFSHIT_PATH`, then
+an installed `csl-ctfshitcli` distribution, then validated immediate
+`ctfshitcli`/legacy `ctfshit` sibling or child checkouts. It is used only for
+rich Markdown writeups; Discord and CTFd do not depend on it. If unavailable,
+Dayı still writes its built-in Markdown format.
 
 ---
 
@@ -262,9 +272,9 @@ dayi scan challenge.jpg \
     --bf-limit 50000 \
     --writeup writeup.md \
     --ctfd-url https://ctf.example.com \
-    --ctfd-token YOUR_TOKEN \
+    --ctfd-token REDACTED_TOKEN \
     --challenge-id 42 \
-    --webhook "https://discord.com/api/webhooks/…" \
+    --webhook "https://discord.example.invalid/webhook-placeholder" \
     --output report \
     --format json \
     --log-file dayi.log \
@@ -297,12 +307,14 @@ Core:
 Integration (v2.0):
   --webhook URL           Discord webhook
   --ctfd-url URL          CTFd base URL
-  --ctfd-token TOKEN      CTFd API token
+  --ctfd-token REDACTED_TOKEN
+                           CTFd API token
   --challenge-id ID       Challenge ID for auto-submit
   --challenge-name NAME   Challenge name in Discord embed
 
 Write-up (v3.0):
   --writeup FILE.md       Generate Markdown writeup after scan
+  --ctfshit-path PATH     Explicit validated ctfshitcli checkout
 ```
 
 By default, each scan gets a unique workspace under the operating system's
@@ -354,7 +366,12 @@ reports. Treat every retained artifact as untrusted input.
 
 ### 🔗 Integration
 
-**How notifications work:**
+Notifications are native Dayı functionality. At manager initialization Dayı
+selects usable aiohttp when present, otherwise the stdlib urllib transport. The
+selection is fixed for the scan: a failed request is never retried through the
+other transport. CTFd and Discord are dispatched independently, so failure in
+one channel neither repeats nor suppresses the other and never invalidates a
+completed scan.
 
 ```
 flag found
@@ -362,12 +379,60 @@ flag found
   ▼
 notify(flag, tool)   ← asyncio.create_task, returns immediately
   │
-  ├─ ctfshit installed?  → FlagSubmitter + send_flag_notification
-  ├─ aiohttp installed?  → direct POST to CTFd + Discord webhook
-  └─ neither?            → urllib (run_in_executor, non-blocking)
+  ├─ usable aiohttp?  → native asynchronous HTTPS/HTTP POST
+  └─ otherwise       → native urllib POST via run_in_executor
+       ├─ CTFd result
+       └─ Discord result (independent)
 ```
 
-Won't crash if ctfshit is missing. Won't crash if the webhook is dead. Same flag never goes out twice — tracked in a `set()`.
+Configuration is selected field by field: explicit CLI value, then nonblank
+environment value, then the default/disabled state.
+
+| CLI option | Environment variable |
+|---|---|
+| `--ctfd-url` | `DAYI_CTFD_URL` |
+| `--ctfd-token` | `DAYI_CTFD_TOKEN` |
+| `--challenge-id` | `DAYI_CTFD_CHALLENGE_ID` |
+| `--webhook` | `DAYI_DISCORD_WEBHOOK_URL` |
+| `--challenge-name` | `DAYI_CHALLENGE_NAME` |
+| `--ctfshit-path` | `DAYI_CTFSHIT_PATH` |
+
+Use environment variables for tokens and webhook URLs where practical. CLI
+arguments can be visible in process listings, shell history, and terminal logs.
+The examples below use placeholders, not working credentials.
+
+```bash
+# 1. CTFd from environment only
+export DAYI_CTFD_URL=https://ctf.example.com
+export DAYI_CTFD_TOKEN=REDACTED_TOKEN
+export DAYI_CTFD_CHALLENGE_ID=42
+dayi scan challenge.jpg
+
+# 2. Discord from environment only
+export DAYI_DISCORD_WEBHOOK_URL=https://discord.example.invalid/webhook-placeholder
+dayi scan challenge.jpg
+
+# 3. Both channels together (uses the variables above)
+dayi scan challenge.jpg --challenge-name "Example challenge"
+
+# 4. One CLI value overrides only its corresponding environment value
+dayi scan challenge.jpg --challenge-id 43
+
+# 5. Rich writeup exporter from an explicit local checkout
+export DAYI_CTFSHIT_PATH=../ctfshitcli
+dayi scan challenge.jpg --writeup writeup.md
+
+# 6. Network-free diagnostics in plain or schema-version-1 JSON
+dayi doctor
+dayi doctor --json
+```
+
+Discord webhook URLs require HTTPS. CTFd HTTP remains accepted for backward
+compatibility, but HTTPS is recommended. URL userinfo, query strings, and
+fragments are rejected; redirects are blocked; requests use bounded timeouts;
+and CTFd response reads are bounded. Doctor validates local configuration only:
+it does not test endpoints, credentials, or reachability. Notification secrets
+are not added to TXT, JSON, or Markdown reports.
 
 **Write-up export:**
 
@@ -406,7 +471,7 @@ DayiStegoSolver/
 │       ├── outguess.py     # empty-pass + streaming BF
 │       ├── binwalk.py      # extraction + protected-ZIP carving fallback
 │       └── …               # exiftool, exiv2, strings, zsteg, stegseek
-├── ctfshit/                # optional — drop here, auto-detected
+├── ctfshitcli/             # optional validated child checkout for writeups
 ├── pyproject.toml
 └── .gitignore
 ```
@@ -451,7 +516,9 @@ MIT — do whatever you want with it.
 
 ## 🇹🇷 Türkçe Dokümantasyon
 
-> **Güncel sürüm:** 4.0.0, 2026-07-18 tarihinde yayımlandı.
+> **Güncel geliştirme sürümü:** 4.1.0. Sürüm hazırlığı
+> [değişiklik günlüğünde](CHANGELOG.md) yer alır; yayımlanmış son
+> [sürüm notları](RELEASE_NOTES_v4.0.0.md) 4.0.0 içindir.
 
 <div align="center">
 
@@ -523,8 +590,8 @@ Dört modül de isteğe bağlı runtime bulunmadığında temizce atlanır; vars
 | 🧹 | **Zombie-safe subprocess** | SIGTERM → 2s → SIGKILL → `wait_for(5s)`. Takılı process bırakmaz. |
 | 🔒 | **OOM koruması** | rockyou.txt satır satır stream edilir. 134MB RAM'e hiç yüklenmez. |
 | 🛡️ | **Token temizleme** | Null-byte ve kontrol karakterlerini steghide argümanlarına gitmeden önce siler. |
-| 🧩 | **ctfshit entegrasyonu** | ctfshit'i proje dizinine klonla, Dayı otomatik bulur. Ayar gerekmez. |
-| 🔄 | **3 katmanlı HTTP fallback** | ctfshit → aiohttp → stdlib urllib. Ne yüklü olursa, bildirim gider. |
+| 🧩 | **ctfshit writeup entegrasyonu** | Zengin Markdown için isteğe bağlı `csl-ctfshitcli` exporter'ını kullanır; yerleşik Markdown fallback her zaman hazırdır. |
+| 🔄 | **Yerel bildirim transport'u** | Kullanılabilir aiohttp'yu bir kez seçer, yoksa stdlib urllib kullanır; CTFd ve Discord bağımsızdır. |
 | 🗂️ | **Flag attribution** | Raporda `CTF{flag} ← bulan: exiftool, binwalk` yazar. |
 | ⌨️ | **Ctrl+C güvenli** | İstediğin zaman dur. Kısmi sonuçlar yazılır. Veri kaybolmaz. |
 
@@ -556,7 +623,7 @@ pip install -e ".[ole]"
 # Stream edilen PCAP/PCAPNG ağ forensics (isteğe bağlı)
 pip install -e ".[pcap]"
 
-# CTFd/Discord fallback için (ctfshit olmadan)
+# Tercih edilen yerel CTFd/Discord transport'u (stdlib urllib her zaman hazır)
 pip install -e ".[integration]"
 
 dayi doctor
@@ -567,7 +634,9 @@ sağlığını, bilinen harici araçları ve isteğe bağlı Python kabiliyetler
 denetler. Harici araçlar format-özel ve isteğe bağlıdır; eksik olmaları temel
 kullanımı engellemez. Çekirdek CLI kullanılabiliyorsa isteğe bağlı eksiklerde
 bile çıkış kodu `0`, çekirdek kurulum sağlıksızsa `1` olur. CI ve scriptler için
-`dayi doctor --json` kullanın.
+`dayi doctor --json` kullanın. Yerel bildirim tanısı seçilecek aiohttp/urllib
+transport'unu ve güvenli CTFd/Discord yapılandırma durumlarını gösterir; endpoint
+veya credential testi yapmaz ve değerleri yazdırmaz.
 
 **Sistem araçları (Kali / Debian / Ubuntu):**
 
@@ -580,12 +649,18 @@ sudo apt install -y tesseract-ocr
 # stegseek: https://github.com/RickdeJager/stegseek/releases
 ```
 
-**ctfshit (isteğe bağlı):**
+**ctfshit zengin writeup export'u (isteğe bağlı):**
 
 ```bash
-git clone https://github.com/MacallanTheRoot/ctfshit ctfshit/
-# Ayar yok. Dizinde varsa Dayı kullanır.
+export DAYI_CTFSHIT_PATH=../ctfshitcli
+# Alternatif: python -m pip install -e ../ctfshitcli
 ```
+
+Resolver önce `--ctfshit-path` veya `DAYI_CTFSHIT_PATH`, sonra kurulu
+`csl-ctfshitcli` dağıtımı, ardından doğrulanmış doğrudan kardeş/çocuk
+`ctfshitcli` (ve eski `ctfshit`) checkout'larını dener. Bu entegrasyon yalnızca
+zengin Markdown writeup içindir; CTFd ve Discord bundan bağımsızdır. Bulunamazsa
+yerleşik Markdown fallback yine çıktı üretir.
 
 ---
 
@@ -653,9 +728,9 @@ dayi scan challenge.jpg \
     --bf-limit 50000 \
     --writeup cozum.md \
     --ctfd-url https://ctf.example.com \
-    --ctfd-token TOKEN \
+    --ctfd-token REDACTED_TOKEN \
     --challenge-id 42 \
-    --webhook "https://discord.com/api/webhooks/…" \
+    --webhook "https://discord.example.invalid/webhook-placeholder" \
     --output rapor \
     --format json \
     -v
@@ -698,16 +773,60 @@ Son: TXT / JSON rapor + --writeup verilmişse Markdown
 
 ### 🔗 Entegrasyon — CTFd & Discord
 
-```bash
-# Sadece Discord
-dayi foto.jpg --flag "CTF{.*?}" --webhook "https://discord.com/api/webhooks/…"
+Bildirimler Dayı'nın yerel özelliğidir. Manager oluşturulurken kullanılabilir
+aiohttp varsa bir kez seçilir; yoksa stdlib urllib kullanılır. Tarama boyunca
+transport değişmez ve başarısız istek diğer transport ile tekrar gönderilmez.
+CTFd ile Discord bağımsız çalışır: birinin hatası diğerini tekrarlamaz veya
+engellemez ve tamamlanmış taramanın çıkış kodunu değiştirmez.
 
-# Sadece CTFd
-dayi foto.jpg --flag "CTF{.*?}" \
-    --ctfd-url https://ctf.example.com --ctfd-token TOKEN --challenge-id 42
+Her alan için öncelik ayrı uygulanır: açık CLI değeri → boş olmayan ortam
+değişkeni → varsayılan/devre dışı durum.
+
+| CLI seçeneği | Ortam değişkeni |
+|---|---|
+| `--ctfd-url` | `DAYI_CTFD_URL` |
+| `--ctfd-token` | `DAYI_CTFD_TOKEN` |
+| `--challenge-id` | `DAYI_CTFD_CHALLENGE_ID` |
+| `--webhook` | `DAYI_DISCORD_WEBHOOK_URL` |
+| `--challenge-name` | `DAYI_CHALLENGE_NAME` |
+| `--ctfshit-path` | `DAYI_CTFSHIT_PATH` |
+
+Token ve webhook URL'leri için mümkün olduğunda ortam değişkenlerini kullanın.
+CLI argümanları process listelerinde, shell history'de ve terminal loglarında
+görünebilir. Aşağıdaki değerler çalışan credential değil, yer tutucudur.
+
+```bash
+# 1. Yalnızca ortam değişkenleriyle CTFd
+export DAYI_CTFD_URL=https://ctf.example.com
+export DAYI_CTFD_TOKEN=REDACTED_TOKEN
+export DAYI_CTFD_CHALLENGE_ID=42
+dayi scan challenge.jpg
+
+# 2. Yalnızca ortam değişkeniyle Discord
+export DAYI_DISCORD_WEBHOOK_URL=https://discord.example.invalid/webhook-placeholder
+dayi scan challenge.jpg
+
+# 3. Yukarıdaki değerlerle iki kanal birlikte
+dayi scan challenge.jpg --challenge-name "Örnek challenge"
+
+# 4. CLI yalnızca ilgili ortam alanını ezer
+dayi scan challenge.jpg --challenge-id 43
+
+# 5. Yerel checkout ile zengin writeup exporter
+export DAYI_CTFSHIT_PATH=../ctfshitcli
+dayi scan challenge.jpg --writeup cozum.md
+
+# 6. Ağsız düz ve schema-version-1 JSON tanısı
+dayi doctor
+dayi doctor --json
 ```
 
-Kütüphane önceliği: ctfshit → aiohttp → urllib. Aynı flag iki kez gönderilmez (`set()` koruması). Webhook çökerse program çökmez.
+Discord webhook URL'si HTTPS gerektirir. CTFd HTTP yalnızca geriye uyumluluk
+için kabul edilir; HTTPS önerilir. URL userinfo, query string ve fragment
+alanları reddedilir; redirect'ler engellenir; istek timeout'ları ve CTFd cevap
+okumaları sınırlıdır. Doctor yalnızca yerel yapılandırmayı doğrular; endpoint,
+credential veya erişilebilirlik testi yapmaz. Bildirim sırları TXT, JSON veya
+Markdown raporlarına eklenmez.
 
 ---
 

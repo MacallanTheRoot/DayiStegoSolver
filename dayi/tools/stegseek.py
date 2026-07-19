@@ -15,7 +15,14 @@ from pathlib import Path
 
 from dayi.reporter import ToolResult
 from dayi.scanner import scan_file, scan_text
-from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
+from dayi.tools._base import (
+    FileType,
+    async_run_command,
+    describe_file_type,
+    get_file_type,
+    is_tool_available,
+    make_skipped_result,
+)
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
 from dayi.tools._plugin import (
     PluginContext,
@@ -28,6 +35,12 @@ logger = logging.getLogger("dayi")
 
 TOOL_NAME = "stegseek"
 BINARY    = "stegseek"
+
+_SUPPORTED_FORMATS: frozenset[FileType] = frozenset({
+    FileType.JPEG,
+    FileType.BMP,
+    FileType.WAV,
+})
 
 
 async def run_stegseek(
@@ -58,6 +71,18 @@ async def run_stegseek(
             f"{BINARY} not found on PATH (install from GitHub: RickdeJager/stegseek)",
             [BINARY],
         )
+
+    file_type = get_file_type(target)
+    if file_type not in _SUPPORTED_FORMATS:
+        fmt_label = describe_file_type(file_type)
+        skip_reason = (
+            f"stegseek requires JPEG/BMP/WAV; detected format: {file_type.name}"
+        )
+        logger.info(
+            f"[-] Yeğenim bu dosya {fmt_label} formatında, "
+            f"stegseek buna yaramaz, boşuna yormayalım aleti. Atlıyorum..."
+        )
+        return make_skipped_result(TOOL_NAME, skip_reason, [BINARY, str(target)])
 
     with tempfile.TemporaryDirectory(prefix="dayi_stegseek_") as tmpdir_str:
         out_path = Path(tmpdir_str) / "stegseek_extracted"

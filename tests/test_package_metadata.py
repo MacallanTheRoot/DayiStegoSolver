@@ -14,7 +14,7 @@ from dayi import cli
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 REPOSITORY_URL = "https://github.com/MacallanTheRoot/DayiStegoSolver"
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 
 
 def _load_project_metadata() -> dict:
@@ -107,7 +107,7 @@ class PackageMetadataTests(unittest.TestCase):
         self.assertEqual(dayi.__author__, "MacallanTheRoot")
 
     def test_release_documents_follow_authoritative_identity(self) -> None:
-        release_notes = ROOT / f"RELEASE_NOTES_v{VERSION}.md"
+        release_notes = ROOT / "RELEASE_NOTES_v4.0.0.md"
         documents = {
             "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
             "CHANGELOG.md": (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
@@ -118,9 +118,9 @@ class PackageMetadataTests(unittest.TestCase):
         }
 
         self.assertTrue(release_notes.is_file())
-        self.assertIn(f"# Dayı Stego Solver {VERSION}", documents[release_notes.name])
-        self.assertIn(f"## [{VERSION}] - 2026-07-18", documents["CHANGELOG.md"])
-        self.assertIn(f"v{VERSION}", documents["RELEASE_CHECKLIST.md"])
+        self.assertIn("# Dayı Stego Solver 4.0.0", documents[release_notes.name])
+        self.assertIn(f"## [{VERSION}] - 2026-07-19", documents["CHANGELOG.md"])
+        self.assertIn("v4.0.0", documents["RELEASE_CHECKLIST.md"])
         self.assertIn(f"Version-{VERSION}", documents["README.md"])
         for text in documents.values():
             self.assertIn(REPOSITORY_URL, text)
@@ -139,14 +139,14 @@ class PackageMetadataTests(unittest.TestCase):
                 cli.main()
 
         self.assertEqual(raised.exception.code, 0)
-        self.assertEqual(output.getvalue(), "dayi 4.0.0\n")
+        self.assertEqual(output.getvalue(), f"dayi {VERSION}\n")
         asyncio_run.assert_not_called()
         build_integration.assert_not_called()
         discover_plugins.assert_not_called()
 
-    def test_module_version_command_is_concise_and_successful(self) -> None:
+    def test_pyproject_runtime_and_module_cli_versions_match(self) -> None:
         completed = subprocess.run(
-            [sys.executable, "-m", "dayi.cli", "--version"],
+            [sys.executable, "-m", "dayi", "--version"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -154,7 +154,8 @@ class PackageMetadataTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout, "dayi 4.0.0\n")
+        self.assertEqual(dayi.__version__, self.project["version"])
+        self.assertEqual(completed.stdout, f"dayi {self.project['version']}\n")
         self.assertEqual(completed.stderr, "")
 
 

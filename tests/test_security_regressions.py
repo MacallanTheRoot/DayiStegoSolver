@@ -206,11 +206,10 @@ assert len(registry.plugins) == 19
         async def fail(_flag: str) -> None:
             raise TimeoutError("network stalled")
 
-        manager._ctfshit_backend = (object(), object(), object())
-        manager._aiohttp = None
-        manager._send_via_ctfshit = fail  # type: ignore[method-assign]
-        manager._send_via_urllib = fail  # type: ignore[method-assign]
-        await manager._dispatch("FLAG{safe}", "test")
+        manager._transport = "aiohttp"
+        manager._send_discord_aiohttp = fail  # type: ignore[method-assign]
+        results = await manager._dispatch("FLAG{safe}", "test")
+        self.assertEqual(results[0].error_category, "timeout")
 
     def test_fallback_markdown_contains_untrusted_backticks_safely(self) -> None:
         result = _result("scanner")

@@ -377,7 +377,7 @@ async def _run_lsb_legacy(
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
         fmt_label = describe_file_type(file_type)
-        reason = f"lsb_py requires PNG/BMP; detected: {file_type}"
+        reason = f"lsb_py requires PNG/BMP; detected: {file_type.name}"
         logger.info(
             f"[-] Yeğenim bu dosya {fmt_label} formatında, "
             f"LSB analizim sadece PNG ve BMP'ye bakıyor. Atlıyorum..."
@@ -473,7 +473,7 @@ async def run_lsb(
         )
         return make_skipped_result(
             TOOL_NAME,
-            f"lsb_py requires PNG/BMP; detected: {file_type}",
+            f"lsb_py requires PNG/BMP; detected: {file_type.name}",
             command,
         )
 

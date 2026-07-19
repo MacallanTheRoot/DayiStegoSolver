@@ -3,15 +3,9 @@ dayi/integrations.py
 ~~~~~~~~~~~~~~~~~~~~~
 Real-time flag notification and auto-submission integration for Dayı v3.0.
 
-Library resolution chain (first available wins, application never crashes):
-  Priority 1 — ctfshit  : FlagSubmitter (CTFd) + send_flag_notification (Discord embed)
-  Priority 2 — aiohttp  : direct async HTTP fallback for CTFd + Discord webhook
-  Priority 3 — urllib   : stdlib sync fallback via run_in_executor (always available)
-
-ctfshit import paths (as specified by the project):
-  from ctfshit.src.api_client       import CTFdAPIClient
-  from ctfshit.src.flag_submitter   import FlagSubmitter
-  from ctfshit.src.discord_notifier import send_flag_notification
+One native transport is selected when the manager is created:
+  Priority 1 — aiohttp : direct asynchronous HTTP
+  Priority 2 — urllib  : stdlib synchronous HTTP via run_in_executor
 
 Public API:
   IntegrationManager(webhook, ctfd_url, ctfd_token, challenge_id, challenge_name)
@@ -30,54 +24,281 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Optional
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal, Optional
 
 from dayi import __version__
 
 logger = logging.getLogger("dayi")
 
-def _resolve_optional_backends() -> tuple[tuple[object, object, object] | None, object | None]:
-    """Lazy-load optional notification libraries only when integration is enabled."""
-    ctfshit_backend = None
-    aiohttp_backend = None
+
+NOTIFICATION_TOTAL_TIMEOUT = 10.0
+NOTIFICATION_CONNECT_TIMEOUT = 5.0
+NOTIFICATION_READ_TIMEOUT = 5.0
+URLLIB_REQUEST_TIMEOUT = 10.0
+CTFD_RESPONSE_LIMIT = 64 * 1024
+_CTFD_ATTEMPT_PATH = "/api/v1/challenges/attempt"
+_DEFAULT_CHALLENGE_NAME = "Dayı Auto-Solve"
+
+
+Channel = Literal["ctfd", "discord"]
+ErrorCategory = Literal[
+    "configuration",
+    "timeout",
+    "network",
+    "rejected",
+    "invalid-response",
+    "internal",
+]
+ConfigurationState = Literal["configured", "incomplete", "invalid", "not-configured"]
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """Secret-free outcome of one notification channel attempt."""
+
+    channel: Channel
+    attempted: bool
+    success: bool
+    status_code: int | None
+    error_category: ErrorCategory | None
+
+
+@dataclass(frozen=True)
+class NotificationConfiguration:
+    """Selected CLI/environment notification values before URL validation."""
+
+    webhook_url: str
+    ctfd_url: str
+    ctfd_token: str
+    challenge_id: int
+    challenge_name: str
+
+
+@dataclass(frozen=True)
+class NativeNotificationDiagnostic:
+    """Secret-free, network-free notification capability status."""
+
+    transport: Literal["aiohttp", "urllib"]
+    ctfd_status: ConfigurationState
+    discord_status: ConfigurationState
+
+
+@dataclass(frozen=True)
+class _HttpResponse:
+    """Bounded native HTTP response data used by the urllib transport."""
+
+    status_code: int
+    body: bytes | None
+    body_oversized: bool
+
+
+def _environment_text(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip()
+
+
+def _select_text(cli_value: str | None, environment_name: str, default: str = "") -> str:
+    if cli_value is not None:
+        return cli_value.strip()
+    return _environment_text(environment_name) or default
+
+
+def select_notification_configuration(
+    *,
+    webhook_url: str | None = None,
+    ctfd_url: str | None = None,
+    ctfd_token: str | None = None,
+    challenge_id: int | None = None,
+    challenge_name: str | None = None,
+) -> NotificationConfiguration:
+    """Apply per-field CLI, environment, and default precedence once."""
+    selected_challenge_id = challenge_id
+    if selected_challenge_id is None:
+        raw_challenge_id = _environment_text("DAYI_CTFD_CHALLENGE_ID")
+        if raw_challenge_id is None:
+            selected_challenge_id = 0
+        else:
+            try:
+                selected_challenge_id = int(raw_challenge_id)
+            except ValueError:
+                selected_challenge_id = 0
+                logger.warning(
+                    "[integrations] DAYI_CTFD_CHALLENGE_ID geçersiz; "
+                    "CTFd kanalı devre dışı bırakılabilir."
+                )
+
+    return NotificationConfiguration(
+        webhook_url=_select_text(webhook_url, "DAYI_DISCORD_WEBHOOK_URL"),
+        ctfd_url=_select_text(ctfd_url, "DAYI_CTFD_URL"),
+        ctfd_token=_select_text(ctfd_token, "DAYI_CTFD_TOKEN"),
+        challenge_id=selected_challenge_id,
+        challenge_name=_select_text(
+            challenge_name,
+            "DAYI_CHALLENGE_NAME",
+            _DEFAULT_CHALLENGE_NAME,
+        ),
+    )
+
+
+def _normalize_notification_url(value: str, channel: Channel) -> tuple[str, str | None]:
+    """Validate and normalize one endpoint without network access."""
+    candidate = value.strip()
+    if not candidate:
+        return "", None
+    if any(character.isspace() or ord(character) < 32 for character in candidate):
+        return "", "whitespace or control characters are not allowed"
+
     try:
-        api_module = importlib.import_module("ctfshit.src.api_client")
-        submitter_module = importlib.import_module("ctfshit.src.flag_submitter")
-        discord_module = importlib.import_module("ctfshit.src.discord_notifier")
-        ctfshit_backend = (
-            api_module.CTFdAPIClient,
-            submitter_module.FlagSubmitter,
-            discord_module.send_flag_notification,
+        parsed = urllib.parse.urlsplit(candidate)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        return "", "the URL is malformed"
+
+    allowed_schemes = {"http", "https"} if channel == "ctfd" else {"https"}
+    if parsed.scheme.lower() not in allowed_schemes:
+        return "", "the URL scheme is not allowed"
+    if not hostname:
+        return "", "a hostname is required"
+    if parsed.username is not None or parsed.password is not None:
+        return "", "userinfo is not allowed"
+    if parsed.query or "?" in candidate:
+        return "", "query strings are not allowed"
+    if parsed.fragment or "#" in candidate:
+        return "", "fragments are not allowed"
+
+    path = parsed.path
+    if channel == "ctfd":
+        path = path.rstrip("/")
+        if path.endswith(_CTFD_ATTEMPT_PATH):
+            return "", "the CTFd base URL must not include the submission endpoint"
+
+    normalized = urllib.parse.urlunsplit(
+        (parsed.scheme.lower(), parsed.netloc, path, "", "")
+    )
+    return normalized, None
+
+
+def _resolve_aiohttp() -> object | None:
+    """Return a usable optional aiohttp module, or select stdlib fallback."""
+    try:
+        module = importlib.import_module("aiohttp")
+        if not callable(getattr(module, "ClientSession", None)):
+            raise AttributeError("ClientSession is unavailable")
+        if not callable(getattr(module, "ClientTimeout", None)):
+            raise AttributeError("ClientTimeout is unavailable")
+        return module
+    except Exception:
+        logger.debug("[integrations] aiohttp kullanılamıyor; urllib seçildi.")
+        return None
+
+
+def detect_notification_transport() -> Literal["aiohttp", "urllib"]:
+    """Return the runtime-preferred usable native transport label."""
+    return "aiohttp" if _resolve_aiohttp() is not None else "urllib"
+
+
+def inspect_native_notification_configuration(
+    environment: Mapping[str, str] | None = None,
+) -> NativeNotificationDiagnostic:
+    """Inspect notification environment configuration without exposing values."""
+    active_environment = os.environ if environment is None else environment
+
+    def selected(name: str) -> str | None:
+        value = active_environment.get(name)
+        if value is None or not value.strip():
+            return None
+        return value.strip()
+
+    ctfd_url = selected("DAYI_CTFD_URL")
+    ctfd_token = selected("DAYI_CTFD_TOKEN")
+    raw_challenge_id = selected("DAYI_CTFD_CHALLENGE_ID")
+    ctfd_values_present = any((ctfd_url, ctfd_token, raw_challenge_id))
+    if not ctfd_values_present:
+        ctfd_status: ConfigurationState = "not-configured"
+    else:
+        normalized_ctfd_url, ctfd_url_error = _normalize_notification_url(
+            ctfd_url or "", "ctfd"
         )
-    except (ImportError, AttributeError):
-        logger.debug("[integrations] ctfshit yok yeğenim, HTTP yedeğine bakıyorum.")
-    try:
-        aiohttp_backend = importlib.import_module("aiohttp")
-    except ImportError:
-        logger.debug("[integrations] aiohttp da yok; stdlib urllib nöbette yeğenim.")
-    return ctfshit_backend, aiohttp_backend
+        try:
+            parsed_challenge_id = (
+                int(raw_challenge_id) if raw_challenge_id is not None else None
+            )
+        except ValueError:
+            parsed_challenge_id = -1
+        if ctfd_url_error is not None or (
+            parsed_challenge_id is not None and parsed_challenge_id <= 0
+        ):
+            ctfd_status = "invalid"
+        elif not (
+            normalized_ctfd_url
+            and ctfd_token
+            and parsed_challenge_id is not None
+        ):
+            ctfd_status = "incomplete"
+        else:
+            ctfd_status = "configured"
+
+    webhook_url = selected("DAYI_DISCORD_WEBHOOK_URL")
+    if webhook_url is None:
+        discord_status: ConfigurationState = "not-configured"
+    else:
+        normalized_webhook, webhook_error = _normalize_notification_url(
+            webhook_url, "discord"
+        )
+        discord_status = (
+            "configured"
+            if normalized_webhook and webhook_error is None
+            else "invalid"
+        )
+
+    return NativeNotificationDiagnostic(
+        transport=detect_notification_transport(),
+        ctfd_status=ctfd_status,
+        discord_status=discord_status,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Stdlib urllib fallback (Tier 3 — always available)
+# Native HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _urllib_post_json(url: str, payload: dict, extra_headers: dict | None = None) -> int:
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject redirects without changing urllib's process-global opener."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
+def _urllib_post_json(
+    url: str,
+    payload: dict,
+    extra_headers: dict | None = None,
+    read_response_body: bool = False,
+) -> _HttpResponse:
     """
     Blocking HTTP POST with a JSON body via stdlib urllib.
 
     Intended to run inside asyncio.run_in_executor() so the event loop is
-    never blocked. Returns the HTTP status code, or -1 on connection failure.
+    never blocked. Network errors propagate to the async boundary for safe
+    categorization.
 
     Args:
         url:           Target URL.
         payload:       Dictionary to serialize as the JSON body.
         extra_headers: Optional additional HTTP headers.
 
-    Returns:
-        HTTP response status code, or -1 on failure.
+    Returns bounded response metadata. The body is read only for CTFd.
     """
     body = json.dumps(payload).encode("utf-8")
     req  = urllib.request.Request(url, data=body, method="POST")
@@ -85,14 +306,57 @@ def _urllib_post_json(url: str, payload: dict, extra_headers: dict | None = None
     if extra_headers:
         for key, val in extra_headers.items():
             req.add_header(key, val)
+    opener = urllib.request.build_opener(_NoRedirectHandler())
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-            return resp.status
+        with opener.open(req, timeout=URLLIB_REQUEST_TIMEOUT) as resp:  # noqa: S310
+            response_body = None
+            oversized = False
+            if read_response_body:
+                response_body = resp.read(CTFD_RESPONSE_LIMIT + 1)
+                oversized = len(response_body) > CTFD_RESPONSE_LIMIT
+            return _HttpResponse(resp.status, response_body, oversized)
     except urllib.error.HTTPError as exc:
-        return exc.code
-    except Exception as exc:
-        logger.debug(f"[integrations] urllib POST tökezledi yeğenim: {exc}")
-        return -1
+        return _HttpResponse(exc.code, None, False)
+
+
+async def _read_aiohttp_body_bounded(response) -> tuple[bytes | None, bool]:
+    """Read no more than the configured CTFd response limit plus one byte."""
+    chunks: list[bytes] = []
+    remaining = CTFD_RESPONSE_LIMIT + 1
+    while remaining > 0:
+        chunk = await response.content.read(min(8192, remaining))
+        if not chunk:
+            break
+        if not isinstance(chunk, bytes):
+            return None, False
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    body = b"".join(chunks)
+    return body, len(body) > CTFD_RESPONSE_LIMIT
+
+
+def _ctfd_delivery_result(
+    status_code: int,
+    body: bytes | None,
+    body_oversized: bool,
+) -> DeliveryResult:
+    """Apply identical bounded CTFd response semantics to both transports."""
+    if not 200 <= status_code < 300:
+        return DeliveryResult("ctfd", True, False, status_code, "rejected")
+    if body is None or body_oversized:
+        return DeliveryResult("ctfd", True, False, status_code, "invalid-response")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return DeliveryResult("ctfd", True, False, status_code, "invalid-response")
+    if not isinstance(payload, dict):
+        return DeliveryResult("ctfd", True, False, status_code, "invalid-response")
+    data = payload.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("status"), str):
+        return DeliveryResult("ctfd", True, False, status_code, "invalid-response")
+    if data["status"] != "correct":
+        return DeliveryResult("ctfd", True, False, status_code, "rejected")
+    return DeliveryResult("ctfd", True, True, status_code, None)
 
 
 # ---------------------------------------------------------------------------
@@ -127,33 +391,51 @@ class IntegrationManager:
         challenge_id: int = 0,
         challenge_name: str = "Dayı Auto-Solve",
     ) -> None:
-        self.webhook_url    = webhook_url
-        self.ctfd_url       = ctfd_url.rstrip("/")
-        self.ctfd_token     = ctfd_token
-        self.challenge_id   = challenge_id
-        self.challenge_name = challenge_name
-        self._ctfshit_backend, self._aiohttp = _resolve_optional_backends()
+        normalized_ctfd_url, ctfd_url_error = _normalize_notification_url(
+            ctfd_url, "ctfd"
+        )
+        normalized_webhook_url, webhook_url_error = _normalize_notification_url(
+            webhook_url, "discord"
+        )
+        self.webhook_url = normalized_webhook_url
+        self.ctfd_url = normalized_ctfd_url
+        self.ctfd_token = ctfd_token.strip()
+        self.challenge_id = challenge_id
+        self.challenge_name = challenge_name or _DEFAULT_CHALLENGE_NAME
+        self._aiohttp = _resolve_aiohttp()
+        self._transport = "aiohttp" if self._aiohttp is not None else "urllib"
 
         # In-flight asyncio.Task objects — needed for drain()
         self._tasks: set[asyncio.Task] = set()
 
         # Duplicate submission guard — flags already dispatched this scan
         self._sent_flags: set[str] = set()
+        self._delivery_results: list[DeliveryResult] = []
+
+        ctfd_requested = bool(ctfd_url or ctfd_token or challenge_id)
+        if ctfd_url_error is not None:
+            logger.warning(
+                f"[integrations] CTFd URL geçersiz ({ctfd_url_error}); "
+                "CTFd kanalı devre dışı."
+            )
+        if ctfd_requested and not self._ctfd_configured():
+            logger.warning(
+                "[integrations] CTFd yapılandırması eksik veya geçersiz; "
+                "CTFd kanalı devre dışı."
+            )
+        if webhook_url_error is not None:
+            logger.warning(
+                f"[integrations] Discord webhook URL geçersiz ({webhook_url_error}); "
+                "Discord kanalı devre dışı."
+            )
 
         self._log_active_backend()
 
     def _log_active_backend(self) -> None:
         """Log which notification backend is active at startup."""
-        if self._ctfshit_backend is not None:
-            backend = "ctfshit (FlagSubmitter + Discord embed)"
-        elif self._aiohttp is not None:
-            backend = "aiohttp (doğrudan HTTP)"
-        else:
-            backend = "urllib (stdlib yedek — sıfır bağımlılık)"
-
-        if self.ctfd_url or self.webhook_url:
+        if self._configured_channels():
             logger.info(
-                f"[integrations] Entegrasyon aktif, backend: {backend}. "
+                f"[integrations] Entegrasyon aktif, transport: {self.transport}. "
                 f"Flag bulunca müjdeyi hemen vereceğim yeğenim!"
             )
         else:
@@ -162,6 +444,32 @@ class IntegrationManager:
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
+
+    @property
+    def delivery_results(self) -> tuple[DeliveryResult, ...]:
+        """Return immutable, secret-free delivery outcomes collected so far."""
+        return tuple(self._delivery_results)
+
+    @property
+    def transport(self) -> str:
+        """Return the safe, fixed native transport label."""
+        return self._transport
+
+    @property
+    def configured_channels(self) -> tuple[Channel, ...]:
+        """Return configured channel labels without endpoint details."""
+        return self._configured_channels()
+
+    def _ctfd_configured(self) -> bool:
+        return bool(self.ctfd_url and self.ctfd_token and self.challenge_id > 0)
+
+    def _configured_channels(self) -> tuple[Channel, ...]:
+        channels: list[Channel] = []
+        if self._ctfd_configured():
+            channels.append("ctfd")
+        if self.webhook_url:
+            channels.append("discord")
+        return tuple(channels)
 
     def notify(self, flag: str, tool_name: str) -> None:
         """
@@ -177,19 +485,34 @@ class IntegrationManager:
             flag:      The flag string that was found.
             tool_name: Name of the discovering tool (for log context).
         """
+        channels = self._configured_channels()
+        if not channels:
+            return
         if flag in self._sent_flags:
-            logger.debug(f"[integrations] Çift gönderim engellendi: {flag!r} (zaten yollandı).")
+            logger.debug("[integrations] Çift bildirim gönderimi engellendi.")
             return
 
         self._sent_flags.add(flag)
 
         logger.log(
             25,
-            f"[integrations] 🚨 Müjde! '{flag}' ({tool_name} buldu). "
+            f"[integrations] 🚨 Müjde! {tool_name} bir flag buldu. "
             "Yapılandırılmış servislere yolluyorum, dayın hallediyor..."
         )
 
-        task = asyncio.create_task(self._dispatch(flag, tool_name))
+        dispatch = self._dispatch(flag, tool_name)
+        try:
+            task = asyncio.create_task(dispatch)
+        except Exception:
+            dispatch.close()
+            self._delivery_results.extend(
+                DeliveryResult(channel, False, False, None, "internal")
+                for channel in channels
+            )
+            logger.warning(
+                "[integrations] Bildirim görevi başlatılamadı: internal"
+            )
+            return
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -228,275 +551,174 @@ class IntegrationManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     # -------------------------------------------------------------------------
-    # Internal dispatch — backend routing
+    # Independent channel dispatch
     # -------------------------------------------------------------------------
 
-    async def _dispatch(self, flag: str, tool_name: str) -> None:
-        """
-        Route flag notification through the highest-priority available backend.
-
-        All exceptions are caught and logged so that a network failure never
-        propagates to the event loop or interrupts the scan pipeline.
-
-        Args:
-            flag:      Found flag string.
-            tool_name: Discovering tool name (for log context).
-        """
+    async def _dispatch(self, flag: str, tool_name: str) -> tuple[DeliveryResult, ...]:
+        """Deliver configured channels independently with the fixed transport."""
         del tool_name
-        if self._ctfshit_backend is not None:
-            try:
-                await self._send_via_ctfshit(flag)
-                return
-            except Exception as exc:
-                logger.warning(
-                    f"[integrations] ctfshit tökezledi yeğenim ({exc}); "
-                    "HTTP yedeğine geçiyorum."
-                )
-        if self._aiohttp is not None:
-            try:
-                await self._send_via_aiohttp(flag)
-                return
-            except Exception as exc:
-                logger.warning(
-                    f"[integrations] aiohttp tökezledi yeğenim ({exc}); "
-                    "stdlib yedeğine geçiyorum."
-                )
+        deliveries = []
+        if self._ctfd_configured():
+            deliveries.append(self._deliver("ctfd", flag))
+        if self.webhook_url:
+            deliveries.append(self._deliver("discord", flag))
+        if not deliveries:
+            return ()
+
+        results = tuple(await asyncio.gather(*deliveries))
+        self._delivery_results.extend(results)
+        for result in results:
+            self._log_delivery_result(result)
+        return results
+
+    async def _deliver(self, channel: Channel, flag: str) -> DeliveryResult:
+        """Attempt one channel and convert ordinary failures to safe results."""
         try:
-            await self._send_via_urllib(flag)
+            if self._transport == "aiohttp":
+                if channel == "ctfd":
+                    return await self._send_ctfd_aiohttp(flag)
+                return await self._send_discord_aiohttp(flag)
+            if channel == "ctfd":
+                return await self._send_ctfd_urllib(flag)
+            return await self._send_discord_urllib(flag)
+        except (asyncio.TimeoutError, TimeoutError):
+            return DeliveryResult(channel, True, False, None, "timeout")
+        except urllib.error.URLError as exc:
+            category: ErrorCategory = (
+                "timeout" if isinstance(exc.reason, TimeoutError) else "network"
+            )
+            return DeliveryResult(channel, True, False, None, category)
+        except OSError:
+            return DeliveryResult(channel, True, False, None, "network")
         except Exception as exc:
+            client_error = (
+                getattr(self._aiohttp, "ClientError", None)
+                if self._aiohttp is not None
+                else None
+            )
+            if isinstance(client_error, type) and isinstance(exc, client_error):
+                return DeliveryResult(channel, True, False, None, "network")
+            return DeliveryResult(channel, True, False, None, "internal")
+
+    @staticmethod
+    def _log_delivery_result(result: DeliveryResult) -> None:
+        label = "CTFd" if result.channel == "ctfd" else "Discord"
+        if result.success:
+            logger.info(f"[integrations] {label} bildirimi gönderildi.")
+        elif result.error_category == "rejected" and result.status_code is not None:
             logger.warning(
-                f"[integrations] Bildirim gönderilemedi ({flag!r}): {exc}. "
-                "Taramaya devam ediyoruz, merak etme yeğenim."
+                f"[integrations] {label} bildirimi HTTP {result.status_code} ile reddedildi."
+            )
+        else:
+            logger.warning(
+                f"[integrations] {label} bildirimi başarısız: "
+                f"{result.error_category or 'internal'}"
             )
 
-    # ── Tier 1: ctfshit ──────────────────────────────────────────────────────
+    def _ctfd_payload(self, flag: str) -> dict[str, object]:
+        return {"challenge_id": self.challenge_id, "submission": flag}
 
-    async def _send_via_ctfshit(self, flag: str) -> None:
-        """
-        Submit flag via ctfshit FlagSubmitter and send Discord embed via
-        ctfshit send_flag_notification.
+    def _discord_payload(self, flag: str) -> dict[str, object]:
+        embed = {
+            "title": "🚩 Dayı Flag Buldu!",
+            "color": 0xFEE75C,
+            "fields": [
+                {
+                    "name": "Challenge",
+                    "value": f"`{self.challenge_name}`",
+                    "inline": True,
+                },
+                {
+                    "name": "Flag",
+                    "value": f"||`{flag}`||",
+                    "inline": False,
+                },
+            ],
+            "footer": {
+                "text": f"Dayı Stego Solver v{__version__} — Hallederiz yeğenim!"
+            },
+        }
+        return {"embeds": [embed]}
 
-        Uses CTFdAPIClient as an async context manager to ensure the aiohttp
-        session is properly opened and closed for each background submission.
-
-        Args:
-            flag: Flag string to submit and announce.
-        """
-        # ── CTFd submission ───────────────────────────────────────────────────
-        if self._ctfshit_backend is None:
-            raise RuntimeError("ctfshit backend is unavailable")
-        api_client, flag_submitter, send_discord = self._ctfshit_backend
-        failures: list[str] = []
-        if self.ctfd_url and self.ctfd_token and self.challenge_id:
-            try:
-                async with api_client(self.ctfd_url, self.ctfd_token) as api:
-                    submitter = flag_submitter(api)
-                    result    = await submitter.submit_single_flag(self.challenge_id, flag)
-
-                if result.correct:
-                    logger.log(
-                        25,
-                        f"[integrations] ✅ CTFd kabul etti! "
-                        f"'{self.challenge_name}' çözüldü, tebrikler yeğenim!"
-                    )
-                else:
-                    logger.warning(
-                        f"[integrations] CTFd flag'i reddetti: {result.message}. "
-                        "Yanlış flag mı bulduk yoksa? Bir bak yeğenim..."
-                    )
-            except Exception as exc:
-                logger.warning(f"[integrations] ctfshit CTFd hatası: {exc}")
-                failures.append(f"CTFd: {exc}")
-
-        # ── Discord notification ──────────────────────────────────────────────
-        if self.webhook_url:
-            try:
-                await send_discord(
-                    webhook_url=self.webhook_url,
-                    challenge_name=self.challenge_name,
-                    challenge_id=self.challenge_id or 0,
-                    category="Stego",
-                    points=0,       # Point value unknown at discovery time
-                    flag=flag,
-                    source="watch",
-                )
-                logger.info("[integrations] Discord bildirimi ctfshit üzerinden gönderildi.")
-            except Exception as exc:
-                logger.warning(f"[integrations] ctfshit Discord hatası: {exc}")
-                failures.append(f"Discord: {exc}")
-        if failures:
-            raise RuntimeError("; ".join(failures))
-
-    # ── Tier 2: aiohttp ───────────────────────────────────────────────────────
-
-    async def _send_via_aiohttp(self, flag: str) -> None:
-        """
-        Submit to CTFd and post a Discord embed directly via aiohttp.
-
-        Used when ctfshit is unavailable but aiohttp is installed.
-        Targets the official CTFd v1 submission endpoint:
-          POST /api/v1/challenges/attempt
-          Body: {"challenge_id": <id>, "submission": "<flag>"}
-
-        Args:
-            flag: Flag string to submit and announce.
-        """
+    async def _send_ctfd_aiohttp(self, flag: str) -> DeliveryResult:
         if self._aiohttp is None:
-            raise RuntimeError("aiohttp backend is unavailable")
-        failures: list[str] = []
-        timeout = self._aiohttp.ClientTimeout(total=10)
-
+            raise RuntimeError("aiohttp transport unavailable")
+        timeout = self._aiohttp.ClientTimeout(
+            total=NOTIFICATION_TOTAL_TIMEOUT,
+            connect=NOTIFICATION_CONNECT_TIMEOUT,
+            sock_read=NOTIFICATION_READ_TIMEOUT,
+        )
+        headers = {
+            "Authorization": f"Token {self.ctfd_token}",
+            "Content-Type": "application/json",
+        }
+        url = f"{self.ctfd_url}/api/v1/challenges/attempt"
         async with self._aiohttp.ClientSession(timeout=timeout) as session:
-            # ── CTFd submission ───────────────────────────────────────────────
-            if self.ctfd_url and self.ctfd_token and self.challenge_id:
-                try:
-                    payload = {
-                        "challenge_id": self.challenge_id,
-                        "submission":   flag,
-                    }
-                    headers = {
-                        "Authorization": f"Token {self.ctfd_token}",
-                        "Content-Type":  "application/json",
-                    }
-                    url = f"{self.ctfd_url}/api/v1/challenges/attempt"
+            async with session.post(
+                url,
+                json=self._ctfd_payload(flag),
+                headers=headers,
+                allow_redirects=False,
+            ) as response:
+                status_code = response.status
+                if not 200 <= status_code < 300:
+                    return DeliveryResult("ctfd", True, False, status_code, "rejected")
+                body, oversized = await _read_aiohttp_body_bounded(response)
+                return _ctfd_delivery_result(status_code, body, oversized)
 
-                    async with session.post(url, json=payload, headers=headers) as resp:
-                        data   = await resp.json(content_type=None)
-                        status = data.get("data", {}).get("status", "unknown")
+    async def _send_discord_aiohttp(self, flag: str) -> DeliveryResult:
+        if self._aiohttp is None:
+            raise RuntimeError("aiohttp transport unavailable")
+        timeout = self._aiohttp.ClientTimeout(
+            total=NOTIFICATION_TOTAL_TIMEOUT,
+            connect=NOTIFICATION_CONNECT_TIMEOUT,
+            sock_read=NOTIFICATION_READ_TIMEOUT,
+        )
+        async with self._aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                self.webhook_url,
+                json=self._discord_payload(flag),
+                allow_redirects=False,
+            ) as response:
+                if response.status == 204:
+                    return DeliveryResult("discord", True, True, 204, None)
+                return DeliveryResult(
+                    "discord", True, False, response.status, "rejected"
+                )
 
-                        if status == "correct":
-                            logger.log(
-                                25,
-                                "[integrations] ✅ aiohttp ile CTFd'ye flag gönderildi — "
-                                "correct! Aferin yeğenim!"
-                            )
-                        else:
-                            logger.warning(
-                                f"[integrations] aiohttp CTFd yanıtı: status={status!r}. "
-                                "Bakalım ne dedi..."
-                            )
-                except Exception as exc:
-                    logger.warning(f"[integrations] aiohttp CTFd hatası: {exc}")
-                    failures.append(f"CTFd: {exc}")
-
-            # ── Discord webhook ───────────────────────────────────────────────
-            if self.webhook_url:
-                try:
-                    embed = {
-                        "title":  "🚩 Dayı Flag Buldu!",
-                        "color":  0xFEE75C,
-                        "fields": [
-                            {
-                                "name":   "Challenge",
-                                "value":  f"`{self.challenge_name}`",
-                                "inline": True,
-                            },
-                            {
-                                "name":   "Flag",
-                                "value":  f"||`{flag}`||",
-                                "inline": False,
-                            },
-                        ],
-                        "footer": {
-                            "text": (
-                                f"Dayı Stego Solver v{__version__} — "
-                                "Hallederiz yeğenim!"
-                            )
-                        },
-                    }
-                    async with session.post(
-                        self.webhook_url, json={"embeds": [embed]}
-                    ) as resp:
-                        if resp.status == 204:
-                            logger.info("[integrations] aiohttp Discord bildirimi gönderildi.")
-                        else:
-                            body = await resp.text()
-                            logger.warning(
-                                f"[integrations] Discord webhook HTTP {resp.status}: {body[:200]}"
-                            )
-                            failures.append(f"Discord HTTP {resp.status}")
-                except Exception as exc:
-                    logger.warning(f"[integrations] aiohttp Discord hatası: {exc}")
-                    failures.append(f"Discord: {exc}")
-        if failures:
-            raise RuntimeError("; ".join(failures))
-
-    # ── Tier 3: urllib (stdlib — always available) ────────────────────────────
-
-    async def _send_via_urllib(self, flag: str) -> None:
-        """
-        Submit to CTFd and post a Discord embed via stdlib urllib.
-
-        Runs blocking urlopen() calls in a thread-pool executor so the event
-        loop is never blocked. This is the last-resort fallback when neither
-        ctfshit nor aiohttp is available.
-
-        Args:
-            flag: Flag string to submit and announce.
-        """
+    async def _send_ctfd_urllib(self, flag: str) -> DeliveryResult:
         loop = asyncio.get_running_loop()
+        headers = {"Authorization": f"Token {self.ctfd_token}"}
+        url = f"{self.ctfd_url}/api/v1/challenges/attempt"
+        response = await loop.run_in_executor(
+            None,
+            _urllib_post_json,
+            url,
+            self._ctfd_payload(flag),
+            headers,
+            True,
+        )
+        return _ctfd_delivery_result(
+            response.status_code,
+            response.body,
+            response.body_oversized,
+        )
 
-        # ── CTFd submission ───────────────────────────────────────────────────
-        if self.ctfd_url and self.ctfd_token and self.challenge_id:
-            try:
-                payload = {
-                    "challenge_id": self.challenge_id,
-                    "submission":   flag,
-                }
-                auth_header = {"Authorization": f"Token {self.ctfd_token}"}
-                url         = f"{self.ctfd_url}/api/v1/challenges/attempt"
-
-                status_code = await loop.run_in_executor(
-                    None, _urllib_post_json, url, payload, auth_header
-                )
-                if status_code in (200, 201):
-                    logger.log(
-                        25,
-                        "[integrations] ✅ urllib ile CTFd'ye flag gönderildi! "
-                        "Stdlib ile de hallederiz yeğenim!"
-                    )
-                else:
-                    logger.warning(
-                        f"[integrations] urllib CTFd yanıtı: HTTP {status_code}"
-                    )
-            except Exception as exc:
-                logger.warning(f"[integrations] urllib CTFd hatası: {exc}")
-
-        # ── Discord webhook ───────────────────────────────────────────────────
-        if self.webhook_url:
-            try:
-                embed = {
-                    "title":  "🚩 Dayı Flag Buldu!",
-                    "color":  0xFEE75C,
-                    "fields": [
-                        {
-                            "name":   "Challenge",
-                            "value":  f"`{self.challenge_name}`",
-                            "inline": True,
-                        },
-                        {
-                            "name":   "Flag",
-                            "value":  f"||`{flag}`||",
-                            "inline": False,
-                        },
-                    ],
-                    "footer": {
-                        "text": (
-                            f"Dayı Stego Solver v{__version__} — urllib yedeği"
-                        )
-                    },
-                }
-                status_code = await loop.run_in_executor(
-                    None, _urllib_post_json, self.webhook_url, {"embeds": [embed]}, None
-                )
-                if status_code == 204:
-                    logger.info("[integrations] urllib Discord bildirimi gönderildi.")
-                else:
-                    logger.warning(
-                        f"[integrations] urllib Discord webhook HTTP {status_code}"
-                    )
-            except Exception as exc:
-                logger.warning(f"[integrations] urllib Discord hatası: {exc}")
+    async def _send_discord_urllib(self, flag: str) -> DeliveryResult:
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,
+            _urllib_post_json,
+            self.webhook_url,
+            self._discord_payload(flag),
+            None,
+            False,
+        )
+        if response.status_code == 204:
+            return DeliveryResult("discord", True, True, 204, None)
+        return DeliveryResult(
+            "discord", True, False, response.status_code, "rejected"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -504,16 +726,17 @@ class IntegrationManager:
 # ---------------------------------------------------------------------------
 
 def build_integration(
-    webhook_url: str = "",
-    ctfd_url: str = "",
-    ctfd_token: str = "",
-    challenge_id: int = 0,
-    challenge_name: str = "Dayı Auto-Solve",
+    webhook_url: str | None = None,
+    ctfd_url: str | None = None,
+    ctfd_token: str | None = None,
+    challenge_id: int | None = None,
+    challenge_name: str | None = None,
 ) -> Optional["IntegrationManager"]:
     """
-    Construct an IntegrationManager only when at least one notification
-    endpoint is configured. Returns None if neither webhook nor CTFd URL
-    is provided, keeping the default behaviour identical to v1.x.
+    Select CLI/environment values and construct a manager for valid channels.
+
+    Returns None when neither CTFd nor Discord is completely and validly
+    configured, keeping the default behavior identical to v1.x.
 
     Args:
         webhook_url:    Discord incoming webhook URL.
@@ -525,13 +748,28 @@ def build_integration(
     Returns:
         Configured IntegrationManager instance, or None.
     """
-    if not (webhook_url or ctfd_url):
-        return None
-
-    return IntegrationManager(
+    configuration = select_notification_configuration(
         webhook_url=webhook_url,
         ctfd_url=ctfd_url,
         ctfd_token=ctfd_token,
         challenge_id=challenge_id,
         challenge_name=challenge_name,
     )
+    if not (
+        configuration.webhook_url
+        or configuration.ctfd_url
+        or configuration.ctfd_token
+        or configuration.challenge_id
+    ):
+        return None
+
+    manager = IntegrationManager(
+        webhook_url=configuration.webhook_url,
+        ctfd_url=configuration.ctfd_url,
+        ctfd_token=configuration.ctfd_token,
+        challenge_id=configuration.challenge_id,
+        challenge_name=configuration.challenge_name,
+    )
+    if not manager.configured_channels:
+        return None
+    return manager

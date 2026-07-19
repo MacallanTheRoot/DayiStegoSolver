@@ -18,12 +18,15 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from dayi import MIN_SUPPORTED_PYTHON, __version__
+from dayi.ctfshit_resolver import resolve_writeup_exporter
+from dayi.integrations import inspect_native_notification_configuration
 
 DOCTOR_SCHEMA_VERSION = 1
 VERSION_PROBE_TIMEOUT_SECONDS = 3.0
 VERSION_PROBE_STREAM_BYTES = 8 * 1024
 VERSION_TEXT_CHARS = 240
 _ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+_DAYI_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -155,7 +158,18 @@ EXTERNAL_TOOL_DEFINITIONS = (
 PYTHON_CAPABILITY_DEFINITIONS = (
     PythonCapabilityDefinition("rich", "rich", "rich", "Rich", "terminal UI"),
     PythonCapabilityDefinition(
-        "aiohttp", "aiohttp", "aiohttp", "aiohttp", "HTTP integration fallback"
+        "aiohttp",
+        "aiohttp",
+        "aiohttp",
+        "aiohttp",
+        "preferred native notification transport; urllib fallback is built in",
+    ),
+    PythonCapabilityDefinition(
+        "native_notifications",
+        "urllib.request",
+        "Python standard library",
+        "native notifications",
+        "native CTFd and Discord notifications",
     ),
     PythonCapabilityDefinition("pillow", "PIL", "Pillow", "Pillow", "OCR image loading"),
     PythonCapabilityDefinition(
@@ -167,7 +181,11 @@ PYTHON_CAPABILITY_DEFINITIONS = (
     ),
     PythonCapabilityDefinition("scapy", "scapy", "scapy", "Scapy", "PCAP analysis"),
     PythonCapabilityDefinition(
-        "ctfshit", "ctfshit", "ctfshit", "ctfshit", "local CTF automation integration"
+        "ctfshit",
+        "src.writeup_exporter",
+        "csl-ctfshitcli",
+        "ctfshit",
+        "rich ctfshit writeup exporter",
     ),
 )
 
@@ -415,6 +433,97 @@ def diagnose_python_capability(
     )
 
 
+def diagnose_ctfshit_capability(
+    explicit_path: Path | str | None = None,
+    *,
+    path_source: str | None = None,
+    project_root: Path = _DAYI_PROJECT_ROOT,
+) -> PythonCapabilityDiagnostic:
+    """Resolve the optional ctfshit exporter without invoking it."""
+    try:
+        resolution = resolve_writeup_exporter(
+            explicit_path=explicit_path,
+            project_root=project_root,
+        )
+    except Exception:
+        source = (
+            "environment-configured"
+            if path_source == "environment"
+            else "explicit-path"
+            if explicit_path is not None
+            else "unavailable"
+        )
+        return PythonCapabilityDiagnostic(
+            capability_id="ctfshit",
+            import_name="src.writeup_exporter",
+            distribution="csl-ctfshitcli",
+            display_name="ctfshit writeup exporter",
+            available=False,
+            version=None,
+            metadata_status="import-failed",
+            capability=(
+                "built-in Markdown fallback active — "
+                "ctfshit exporter resolution failed"
+            ),
+            location=None,
+            location_status=source,
+        )
+
+    source = resolution.source_kind
+    if source == "explicit-path" and path_source == "environment":
+        source = "environment-configured"
+    capability = (
+        "rich ctfshit writeup exporter available"
+        if resolution.available
+        else "built-in Markdown fallback active"
+    )
+    return PythonCapabilityDiagnostic(
+        capability_id="ctfshit",
+        import_name="src.writeup_exporter",
+        distribution="csl-ctfshitcli",
+        display_name="ctfshit writeup exporter",
+        available=resolution.available,
+        version=None,
+        metadata_status=resolution.status_code,
+        capability=f"{capability} — {resolution.safe_detail}",
+        location=None,
+        location_status=source,
+    )
+
+
+def diagnose_native_notification_capability() -> PythonCapabilityDiagnostic:
+    """Inspect native notification transport and environment without networking."""
+    diagnostic = inspect_native_notification_configuration()
+    transport_label = (
+        "aiohttp" if diagnostic.transport == "aiohttp" else "urllib fallback"
+    )
+    return PythonCapabilityDiagnostic(
+        capability_id="native_notifications",
+        import_name=(
+            "aiohttp" if diagnostic.transport == "aiohttp" else "urllib.request"
+        ),
+        distribution=(
+            "aiohttp"
+            if diagnostic.transport == "aiohttp"
+            else "Python standard library"
+        ),
+        display_name="native notifications",
+        available=True,
+        version=None,
+        metadata_status="ok",
+        capability=(
+            f"native notifications available via {transport_label}; "
+            f"CTFd configuration: {diagnostic.ctfd_status}; "
+            f"Discord configuration: {diagnostic.discord_status}; "
+            "local validation only — reachability and credentials were not tested"
+        ),
+        location=None,
+        location_status=(
+            "aiohttp" if diagnostic.transport == "aiohttp" else "urllib-fallback"
+        ),
+    )
+
+
 def diagnose_core(
     *,
     version_info: Sequence[int] | None = None,
@@ -481,17 +590,31 @@ def build_doctor_report(
     )
 
 
-def run_diagnostics() -> DoctorReport:
-    """Collect all diagnostics in stable definition order without imports or network."""
+def run_diagnostics(
+    *,
+    ctfshit_path: Path | str | None = None,
+    ctfshit_path_source: str | None = None,
+) -> DoctorReport:
+    """Collect diagnostics without network access or invoking optional exporters."""
     core = diagnose_core()
     external = tuple(
         diagnose_external_tool(definition)
         for definition in EXTERNAL_TOOL_DEFINITIONS
     )
-    capabilities = tuple(
-        diagnose_python_capability(definition)
-        for definition in PYTHON_CAPABILITY_DEFINITIONS
-    )
+    capabilities_list: list[PythonCapabilityDiagnostic] = []
+    for definition in PYTHON_CAPABILITY_DEFINITIONS:
+        if definition.capability_id == "ctfshit":
+            capability = diagnose_ctfshit_capability(
+                ctfshit_path,
+                path_source=ctfshit_path_source,
+                project_root=_DAYI_PROJECT_ROOT,
+            )
+        elif definition.capability_id == "native_notifications":
+            capability = diagnose_native_notification_capability()
+        else:
+            capability = diagnose_python_capability(definition)
+        capabilities_list.append(capability)
+    capabilities = tuple(capabilities_list)
     return build_doctor_report(core, external, capabilities)
 
 
@@ -533,9 +656,21 @@ def render_plain(report: DoctorReport) -> str:
     for item in report.python_capabilities:
         state = "available" if item.available else "missing"
         version = item.version or item.metadata_status
-        location_note = (
-            f"; {item.location_status}" if item.available else ""
+        location_status = (
+            item.location_status.replace("-", " ")
+            if item.capability_id == "ctfshit"
+            else item.location_status
         )
+        location_note = (
+            f"; {location_status}"
+            if item.available or item.capability_id == "ctfshit"
+            else ""
+        )
+        if item.capability_id in {"ctfshit", "native_notifications"}:
+            lines.append(
+                f"  {item.display_name}: {item.capability}{location_note}"
+            )
+            continue
         lines.append(
             f"  {item.display_name:<12} {state:<9} {version} — "
             f"{item.capability}{location_note}"
