@@ -12,9 +12,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Core Dependencies](https://img.shields.io/badge/Core%20Dependencies-stdlib-brightgreen)](pyproject.toml)
 
+**English** · [Türkçe](#-türkçe-dokümantasyon)
+
 [Latest release](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.5.1) ·
 [Installation](#installation) ·
-[Usage](#quick-start) ·
+[Quick start](#quick-start) ·
 [Supported analysis](#what-it-analyzes) ·
 [Security model](#security-model)
 
@@ -23,6 +25,8 @@
 </div>
 
 ---
+
+## English Documentation
 
 ## Why Dayı?
 
@@ -101,7 +105,7 @@ wget https://github.com/RickdeJager/stegseek/releases/latest/download/stegseek_l
 sudo dpkg -i stegseek_linux.deb
 ```
 
-Check the resulting environment:
+Check the environment:
 
 ```bash
 dayi doctor
@@ -240,6 +244,227 @@ Do not submit private challenge data, credentials, or copyrighted corpora withou
 ## License
 
 Released under the [MIT License](LICENSE).
+
+---
+
+## Türkçe Dokümantasyon
+
+## Dayı nedir?
+
+Steganografi challenge'larında çoğu zaman birbirinden bağımsız birçok aracı elle denemek gerekir:
+
+```text
+dosya → exiftool → strings → binwalk → zsteg → steghide → stegseek → OCR → özel scriptler
+```
+
+Dayı bu akışı tek bir CLI altında koordine eder. Analizi yerel, sınırlı ve deterministik tutar.
+
+```bash
+dayi scan challenge.png
+```
+
+Dayı şunları yapabilir:
+
+- dosya uzantısına güvenmek yerine gerçek dosya türünü içerikten algılar;
+- yalnız ilgili araçları ve dahili analiz modüllerini çalıştırır;
+- görsel, metin, arşiv, doküman, PDF, OLE/makro, QR ve PCAP kanıtlarını inceler;
+- iç içe kodlanmış metinleri çözer ve bağlamsal parola adayları toplar;
+- bulunan flag'i hangi pluginin bulduğunu raporlar;
+- Markdown raporu oluşturur;
+- isteğe bağlı olarak CTFd veya Discord bildirimi gönderir.
+
+> Dayı bir triage ve otomasyon aracıdır; her challenge'ı otomatik çözeceği garanti edilmez.
+
+---
+
+## Kurulum
+
+### Core kurulum
+
+```bash
+git clone https://github.com/MacallanTheRoot/DayiStegoSolver.git
+cd DayiStegoSolver
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install -e .
+
+dayi --version
+dayi doctor
+```
+
+Core paket Python standart kütüphanesiyle çalışır. Optional araçlar eksik olsa bile temel CLI kullanılabilir.
+
+### Önerilen optional Python özellikleri
+
+```bash
+python -m pip install -e ".[ui,ocr,qr,pdf,ole,pcap,integration]"
+```
+
+### Kali, Debian veya Ubuntu için önerilen sistem araçları
+
+```bash
+sudo apt update
+sudo apt install -y \
+  libimage-exiftool-perl \
+  exiv2 \
+  binutils \
+  binwalk \
+  steghide \
+  outguess \
+  tesseract-ocr
+
+sudo gem install zsteg
+```
+
+StegSeek'i resmi release üzerinden kur:
+
+```bash
+wget https://github.com/RickdeJager/stegseek/releases/latest/download/stegseek_linux.deb
+sudo dpkg -i stegseek_linux.deb
+```
+
+Ortamı kontrol et:
+
+```bash
+dayi doctor
+dayi plugins list
+```
+
+---
+
+## Hızlı başlangıç
+
+```bash
+# Dahili genel flag patternleri
+dayi scan challenge.png
+
+# Challenge'a özel flag ifadesi
+dayi scan challenge.jpg --flag 'CTF\{.*?\}'
+
+# Uzantısız veya yanıltıcı uzantılı dosya
+dayi scan hidden.data --flag 'SiberVatan\{.*?\}' -v
+
+# Sağlık ve plugin kontrolleri
+dayi doctor
+dayi plugins list
+```
+
+---
+
+## Neleri analiz eder?
+
+| Alan | Kapsam |
+|---|---|
+| **Görseller** | JPEG, PNG, BMP, GIF, TIFF, WebP, PNM; metadata, strings, embedded dosyalar, LSB odaklı analiz, OCR ve QR |
+| **Metin steganografisi** | Bacon, whitespace, zero-width Unicode, homoglyph, acrostic ve yapısal kanallar, ghost text, iç içe Hex/Base64 |
+| **Dokümanlar** | DOCX/DOCM, XLSX/XLSM, PPTX/PPTM, ODT/ODS/ODP ve RTF gizleme yöntemleri, metadata, yorumlar, ilişkiler, medya ve embedded objeler |
+| **Arşivler** | ZIP keşfi, sınırlı extraction, uzantısız ZIP carving, bağlamsal parola denemeleri, streamed wordlist |
+| **PDF** | Metadata, sınırlı sayfa metni, boş parolalı şifreli belgeler, flag ve pasif artifact taraması |
+| **OLE ve makrolar** | Desteklenen OLE ve OpenXML container'lardan sınırlı VBA source extraction |
+| **PCAP/PCAPNG** | Streamed Raw, ICMP, DNS, HTTP, flag, pasif artifact ve tanınan payload carving |
+| **Pasif artifact'ler** | URL, IP, kontrollü domain, credential hint, koordinat ve yazdırılabilir encoded hint |
+
+### Kayıtlı pipeline
+
+Dayı 4.5.1:
+
+- **22 kayıtlı plugin**
+- **12 CONCURRENT aşama işlemi**
+- dinamik plugin keşfi ve doğrulama
+- optional runtime eksik olduğunda temiz degradation
+
+Yaygın entegrasyonlar:
+
+```text
+exiftool · exiv2 · strings · binwalk · zsteg · steghide
+stegseek · outguess · Tesseract · OpenCV/pyzbar/zbarimg
+pypdf · oletools · Scapy
+```
+
+---
+
+## Örnek çalışma akışı
+
+```text
+[+] Hedef türü: PNG
+[+] İlgili metadata, arşiv, LSB, QR ve OCR analizleri başlatıldı
+[+] Yazdırılabilir Base64 adayı çıkarıldı
+[+] İç içe metin çözüldü
+[FLAG] CTF{example_flag}
+[+] Bulan pluginler: strings, text_stego_scanner
+[+] Markdown raporu yazıldı
+```
+
+Gerçek çıktı, kurulu optional araçlara ve analiz edilen challenge'a göre değişir.
+
+---
+
+## Tasarım ilkeleri
+
+- **İçerik tabanlı yönlendirme:** dosya imzaları, dosya uzantısından önce gelir.
+- **Sınırlı çalışma:** parser, arşiv, OCR, doküman, paket, recursion ve subprocess işlemleri açık limitlere sahiptir.
+- **Varsayılan olarak pasif:** bulunan URL ve komutlar raporlanır; açılmaz veya çalıştırılmaz.
+- **Aktif doküman içeriği yok:** makro, formül, field, embedded executable ve external relationship çalıştırılmaz veya fetch edilmez.
+- **Deterministik raporlama:** plugin sırası, attribution ve JSON diagnostic çıktıları tekrarlanabilir çalışmayı destekler.
+- **Temiz degradation:** optional araçların eksikliği core CLI'yi bozmaz.
+
+---
+
+## Güvenlik modeli
+
+Dayı güvenilmeyen CTF dosyalarını işler. Bu nedenle path traversal, symlink escape, decompression bomb, büyük arşiv üyeleri, aşırı görsel boyutları, büyük OCR/PDF/Office/RTF/PCAP girdileri, kontrolsüz recursive decoding, terminal control karakterleri ve timeout sonrası kalan subprocess'ler sınırlandırılır veya reddedilir.
+
+Hiçbir yerel forensics aracı tam sandbox garantisi vermez. Bilinmeyen dosyaları disposable VM veya container içinde analiz et ve üçüncü taraf araçları güncel tut.
+
+---
+
+## Raporlar ve entegrasyonlar
+
+Dayı yerleşik Markdown raporu üretir. İsteğe bağlı olarak:
+
+- daha zengin writeup için doğrulanmış `csl-ctfshitcli` kurulumu kullanabilir;
+- bulunan flag'leri yapılandırılmış CTFd sunucusuna gönderebilir;
+- bağımsız Discord bildirimi gönderebilir.
+
+---
+
+## Sürüm durumu
+
+**Son kararlı sürüm: [v4.5.1](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.5.1)**
+
+- Python: 3.10–3.13
+- CI: desteklenen tüm Python sürümlerinde başarılı
+- Dağıtım: doğrulanmış wheel ve source archive
+- Lisans: MIT
+
+Release checksum dosyaları GitHub Release asset'leri içinde bulunur.
+
+---
+
+## Yol haritası
+
+- kamuya açık CTF challenge benchmark'ı;
+- tekrar üretilebilir demo corpus'u;
+- kurulum ve Docker deneyimi;
+- daha kısa ve görsel dokümantasyon;
+- topluluk geri bildirimi ve dış katkılar.
+
+---
+
+## Katkıda bulunma
+
+Issue ve odaklı pull request'ler kabul edilir. Özellikle tekrar üretilebilir kamuya açık challenge örnekleri, false-positive veya missed-detection raporları, yeni bounded analyzer'lar, portability düzeltmeleri, kurulum dokümanı ve benchmark sonuçları değerlidir.
+
+Dağıtım izni olmayan özel challenge verisi, credential veya copyrighted corpus eklemeyin.
+
+---
+
+## Lisans
+
+Proje [MIT License](LICENSE) altında yayımlanır.
 
 ---
 
