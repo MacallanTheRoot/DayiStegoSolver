@@ -124,7 +124,7 @@ jobs:
           package_path = Path(dayi.__file__).resolve()
           if package_path == workspace or workspace in package_path.parents:
               raise SystemExit(f"dayi imported from checkout: {package_path}")
-          if dayi.__version__ != "4.5.0":
+          if dayi.__version__ != "4.5.1":
               raise SystemExit(f"unexpected runtime version: {dayi.__version__}")
 
           distribution = metadata.distribution("dayi-stego-solver")
@@ -139,7 +139,7 @@ jobs:
           package_metadata = distribution.metadata
           expected = {
               "Name": "dayi-stego-solver",
-              "Version": "4.5.0",
+              "Version": "4.5.1",
               "Author": "MacallanTheRoot",
               "Requires-Python": "<3.14,>=3.10",
           }

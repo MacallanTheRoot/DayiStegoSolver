@@ -16,11 +16,11 @@ from scripts.validate_distribution import (
 )
 
 
-DIST_INFO = "dayi_stego_solver-4.5.0.dist-info"
+DIST_INFO = "dayi_stego_solver-4.5.1.dist-info"
 METADATA = """\
 Metadata-Version: 2.4
 Name: dayi-stego-solver
-Version: 4.5.0
+Version: 4.5.1
 Author: MacallanTheRoot
 License-Expression: MIT
 Requires-Python: <3.14,>=3.10
@@ -60,7 +60,7 @@ def _add_tar_bytes(archive: tarfile.TarFile, name: str, data: bytes = b"fixture\
 
 
 def _write_sdist(path: Path, *, extra: str | None = None) -> None:
-    root = "dayi_stego_solver-4.5.0"
+    root = "dayi_stego_solver-4.5.1"
     with tarfile.open(path, mode="w:gz") as archive:
         for name in sorted(SDIST_REQUIRED):
             _add_tar_bytes(archive, f"{root}/{name}")
@@ -71,7 +71,7 @@ def _write_sdist(path: Path, *, extra: str | None = None) -> None:
 class DistributionContentsTests(unittest.TestCase):
     def test_valid_wheel_content_and_metadata(self) -> None:
         with TemporaryDirectory() as temp_dir:
-            wheel = Path(temp_dir) / "dayi_stego_solver-4.5.0-py3-none-any.whl"
+            wheel = Path(temp_dir) / "dayi_stego_solver-4.5.1-py3-none-any.whl"
             _write_wheel(wheel)
 
             members = validate_wheel(wheel)
@@ -100,7 +100,7 @@ class DistributionContentsTests(unittest.TestCase):
 
     def test_valid_sdist_content(self) -> None:
         with TemporaryDirectory() as temp_dir:
-            sdist = Path(temp_dir) / "dayi_stego_solver-4.5.0.tar.gz"
+            sdist = Path(temp_dir) / "dayi_stego_solver-4.5.1.tar.gz"
             _write_sdist(sdist)
 
             members = validate_sdist(sdist)
@@ -112,7 +112,7 @@ class DistributionContentsTests(unittest.TestCase):
             sdist = Path(temp_dir) / "traversal.tar.gz"
             _write_sdist(
                 sdist,
-                extra="dayi_stego_solver-4.5.0/../outside.txt",
+                extra="dayi_stego_solver-4.5.1/../outside.txt",
             )
 
             with self.assertRaisesRegex(
@@ -137,7 +137,7 @@ class DistributionContentsTests(unittest.TestCase):
     def test_malformed_metadata_is_rejected(self) -> None:
         with TemporaryDirectory() as temp_dir:
             wheel = Path(temp_dir) / "metadata.whl"
-            _write_wheel(wheel, metadata=METADATA.replace("Version: 4.5.0\n", ""))
+            _write_wheel(wheel, metadata=METADATA.replace("Version: 4.5.1\n", ""))
 
             with self.assertRaisesRegex(
                 DistributionValidationError, "metadata 'Version'"
@@ -147,8 +147,8 @@ class DistributionContentsTests(unittest.TestCase):
     def test_unrelated_stale_distribution_is_rejected(self) -> None:
         with TemporaryDirectory() as temp_dir:
             dist_dir = Path(temp_dir)
-            wheel = dist_dir / "dayi_stego_solver-4.5.0-py3-none-any.whl"
-            sdist = dist_dir / "dayi_stego_solver-4.5.0.tar.gz"
+            wheel = dist_dir / "dayi_stego_solver-4.5.1-py3-none-any.whl"
+            sdist = dist_dir / "dayi_stego_solver-4.5.1.tar.gz"
             _write_wheel(wheel)
             _write_sdist(sdist)
             _write_wheel(dist_dir / "stale-2.0.0-py3-none-any.whl")

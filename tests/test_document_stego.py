@@ -338,10 +338,13 @@ class WordMechanismTests(unittest.TestCase):
             f'<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>{zero_width}</w:t></w:r></w:p>'
         )
         bits = "".join(f"{byte:08b}" for byte in FLAG.encode())
-        bold_runs = "".join(
-            f'<w:r><w:rPr>{"<w:b/>" if bit == "1" else "<w:b w:val=\"0\"/>"}</w:rPr><w:t>x</w:t></w:r>'
-            for bit in bits
-        )
+        bold_run_parts = []
+        for bit in bits:
+            bold_property = '<w:b/>' if bit == "1" else '<w:b w:val="0"/>'
+            bold_run_parts.append(
+                f"<w:r><w:rPr>{bold_property}</w:rPr><w:t>x</w:t></w:r>"
+            )
+        bold_runs = "".join(bold_run_parts)
         font_runs = "".join(
             f'<w:r><w:rPr><w:rFonts w:ascii="{"Consolas" if bit == "1" else "Arial"}"/></w:rPr><w:t>x</w:t></w:r>'
             for bit in bits

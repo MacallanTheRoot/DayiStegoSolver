@@ -6,15 +6,15 @@
 
 [![Python 3.10–3.13](https://img.shields.io/badge/Python-3.10%E2%80%933.13-3776AB?logo=python&logoColor=white)](https://python.org)
 [![CI](https://github.com/MacallanTheRoot/DayiStegoSolver/actions/workflows/ci.yml/badge.svg)](https://github.com/MacallanTheRoot/DayiStegoSolver/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/Version-4.5.0-success)](https://github.com/MacallanTheRoot/DayiStegoSolver)
+[![Version](https://img.shields.io/badge/Version-4.5.1-success)](https://github.com/MacallanTheRoot/DayiStegoSolver)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/Core%20Deps-Zero%20%28stdlib%29-brightgreen)](pyproject.toml)
 [![Async](https://img.shields.io/badge/asyncio-gather-blue)](dayi/runner.py)
 
 **English** | [Türkçe](#-türkçe-dokümantasyon)
 
-> **Current release candidate:** 4.5.0. See the
-> [changelog](CHANGELOG.md) and [4.5.0 release notes](RELEASE_NOTES_v4.5.0.md).
+> **Current release candidate:** 4.5.1. See the
+> [changelog](CHANGELOG.md) and [4.5.1 release notes](RELEASE_NOTES_v4.5.1.md).
 > Tagging and publication are separate release steps and are not asserted here.
 
 > Developed with ☕ and CTF tears by [MacallanTheRoot](https://github.com/MacallanTheRoot)
@@ -646,7 +646,7 @@ timeouts, parser failures, unsupported inputs, and missing tools separately.
 Its exit code reports harness/configuration failure rather than the number of
 unsolved files. Regression results depend entirely on the supplied corpus;
 synthetic tests are required for code fixes and private challenge data must never
-become a fixture. The Dayı 4.5.0 release candidate is prepared, but tagging and
+become a fixture. The Dayı 4.5.1 release candidate is prepared, but tagging and
 publication remain separate steps.
 
 ---
@@ -673,9 +673,9 @@ MIT — do whatever you want with it.
 
 ## 🇹🇷 Türkçe Dokümantasyon
 
-> **Güncel sürüm adayı:** 4.5.0. Ayrıntılar
+> **Güncel sürüm adayı:** 4.5.1. Ayrıntılar
 > [değişiklik günlüğünde](CHANGELOG.md) ve
-> [4.5.0 sürüm notlarında](RELEASE_NOTES_v4.5.0.md) yer alır. Etiketleme ve
+> [4.5.1 sürüm notlarında](RELEASE_NOTES_v4.5.1.md) yer alır. Etiketleme ve
 > yayımlama ayrı sürüm adımlarıdır; burada tamamlandıkları iddia edilmez.
 
 <div align="center">
@@ -1127,7 +1127,7 @@ raporunu siler, rapor/özet boyutlarını sınırlar ve timeout, parser hatası,
 unsupported girdi ile eksik aracı ayrı sınıflandırır. Çıkış kodu çözülmeyen dosya
 sayısını değil harness/yapılandırma hatasını gösterir. Sonuçlar tamamen sağlanan
 corpus'a bağlıdır; kod düzeltmeleri sentetik testlerle yeniden üretilmeli ve özel
-challenge verisi fixture yapılmamalıdır. Dayı 4.5.0 sürüm adayı hazırlanmıştır;
+challenge verisi fixture yapılmamalıdır. Dayı 4.5.1 sürüm adayı hazırlanmıştır;
 etiketleme ve yayımlama ayrı adımlardır.
 
 ---

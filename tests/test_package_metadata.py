@@ -14,7 +14,7 @@ from dayi import cli
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 REPOSITORY_URL = "https://github.com/MacallanTheRoot/DayiStegoSolver"
-VERSION = "4.5.0"
+VERSION = "4.5.1"
 
 
 def _load_project_metadata() -> dict:
@@ -107,7 +107,7 @@ class PackageMetadataTests(unittest.TestCase):
         self.assertEqual(dayi.__author__, "MacallanTheRoot")
 
     def test_release_documents_follow_authoritative_identity(self) -> None:
-        release_notes = ROOT / "RELEASE_NOTES_v4.5.0.md"
+        release_notes = ROOT / "RELEASE_NOTES_v4.5.1.md"
         documents = {
             "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
             "CHANGELOG.md": (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
@@ -118,7 +118,7 @@ class PackageMetadataTests(unittest.TestCase):
         }
 
         self.assertTrue(release_notes.is_file())
-        self.assertIn("# Dayı Stego Solver 4.5.0", documents[release_notes.name])
+        self.assertIn("# Dayı Stego Solver 4.5.1", documents[release_notes.name])
         self.assertIn(f"## [{VERSION}] - 2026-07-20", documents["CHANGELOG.md"])
         self.assertIn("v4.0.0", documents["RELEASE_CHECKLIST.md"])
         self.assertIn(f"Version-{VERSION}", documents["README.md"])

@@ -4,6 +4,24 @@ All notable changes to Dayı Stego Solver are documented here.
 
 ## [Unreleased]
 
+## [4.5.1] - 2026-07-20
+
+Patch release candidate prepared on 2026-07-20. Tagging and publication remain
+separate release steps.
+
+### Fixed
+
+- Fixed Python 3.10 and 3.11 test-suite parsing compatibility by moving an
+  escaped XML literal out of an f-string expression. This changes no
+  steganography detection or runtime scanning behavior.
+
+### Compatibility
+
+- Preserved the deterministic registry of 22 plugins, including 12 operations
+  in the `CONCURRENT` phase.
+- Supersedes 4.5.0 for source and CI validation while retaining the complete
+  4.5.0 release history.
+
 ## [4.5.0] - 2026-07-20
 
 Release candidate prepared on 2026-07-20. Tagging and publication remain
@@ -247,7 +265,8 @@ the production repository.
 These measures reduce exposure to hostile CTF inputs; they are not a guarantee
 that every file, parser, optional dependency, or external executable is safe.
 
-[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.0...HEAD
+[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.1...HEAD
+[4.5.1]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.1.0...v4.5.0
 [4.1.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.0.0
