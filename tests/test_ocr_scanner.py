@@ -146,6 +146,12 @@ class OCRScannerTests(unittest.TestCase):
             with patch(
                 "dayi.tools.ocr_scanner._load_ocr_dependencies",
                 return_value=dependencies,
+            ), patch(
+                "dayi.tools.ocr_scanner.shutil.which",
+                return_value="/controlled/tesseract",
+            ), patch(
+                "dayi.tools.ocr_scanner._probe_ocr_languages",
+                return_value=("eng",),
             ):
                 result = asyncio.run(
                     run_ocr_scanner(
@@ -203,6 +209,12 @@ class OCRScannerTests(unittest.TestCase):
             with patch(
                 "dayi.tools.ocr_scanner._load_ocr_dependencies",
                 return_value=dependencies,
+            ), patch(
+                "dayi.tools.ocr_scanner.shutil.which",
+                return_value="/controlled/tesseract",
+            ), patch(
+                "dayi.tools.ocr_scanner._probe_ocr_languages",
+                return_value=("eng",),
             ):
                 result = asyncio.run(
                     run_ocr_scanner(

@@ -114,9 +114,19 @@ class AdvancedOCRTests(unittest.TestCase):
             root = Path(tmpdir)
             target = root / "image.anything"
             target.write_bytes(_png(b"fixture"))
-            with patch(
-                "dayi.tools.ocr_scanner._load_ocr_dependencies",
-                return_value=OCRDependencies(_Images, engine),
+            with (
+                patch(
+                    "dayi.tools.ocr_scanner._load_ocr_dependencies",
+                    return_value=OCRDependencies(_Images, engine),
+                ),
+                patch(
+                    "dayi.tools.ocr_scanner.shutil.which",
+                    return_value="/controlled/tesseract",
+                ),
+                patch(
+                    "dayi.tools.ocr_scanner._probe_ocr_languages",
+                    return_value=("eng", "tur"),
+                ),
             ):
                 result = asyncio.run(
                     run_ocr_scanner(
@@ -169,6 +179,7 @@ class AdvancedOCRTests(unittest.TestCase):
             target.write_bytes(_png())
             with (
                 patch("dayi.tools.ocr_scanner._load_ocr_dependencies", return_value=OCRDependencies(_Images, engine)),
+                patch("dayi.tools.ocr_scanner.shutil.which", return_value="/controlled/tesseract"),
                 patch("dayi.tools.ocr_scanner._probe_ocr_languages", return_value=("eng",)),
             ):
                 result = asyncio.run(run_ocr_scanner(target, root / "w", re.compile("x"), language="tur"))
@@ -197,6 +208,7 @@ class AdvancedOCRTests(unittest.TestCase):
             frames[0].save(target, format="GIF", save_all=True, append_images=frames[1:])
             with (
                 patch("dayi.tools.ocr_scanner._load_ocr_dependencies", return_value=dependencies),
+                patch("dayi.tools.ocr_scanner.shutil.which", return_value="/controlled/tesseract"),
                 patch("dayi.tools.ocr_scanner._probe_ocr_languages", return_value=("eng",)),
             ):
                 result = asyncio.run(run_ocr_scanner(
@@ -235,6 +247,7 @@ class AdvancedOCRTests(unittest.TestCase):
             target.write_bytes(_png())
             with (
                 patch("dayi.tools.ocr_scanner._load_ocr_dependencies", return_value=OCRDependencies(HugeImages, engine)),
+                patch("dayi.tools.ocr_scanner.shutil.which", return_value="/controlled/tesseract"),
                 patch("dayi.tools.ocr_scanner._probe_ocr_languages", return_value=("eng",)),
             ):
                 result = asyncio.run(run_ocr_scanner(target, root / "w", re.compile("must_not_run")))
