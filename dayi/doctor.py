@@ -1,6 +1,7 @@
 """Dependency-free installation diagnostics for Dayı Stego Solver."""
 from __future__ import annotations
 
+import importlib
 import importlib.metadata
 import importlib.util
 import json
@@ -49,6 +50,7 @@ class PythonCapabilityDefinition:
     distribution: str
     display_name: str
     capability: str
+    distribution_alternatives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,9 @@ EXTERNAL_TOOL_DEFINITIONS = (
     ExternalToolDefinition(
         "tesseract", "tesseract", ("--version",), "OCR runtime", "visible-text OCR"
     ),
+    ExternalToolDefinition(
+        "zbarimg", "zbarimg", ("--version",), "QR runtime", "passive QR fallback"
+    ),
 )
 
 PYTHON_CAPABILITY_DEFINITIONS = (
@@ -171,13 +176,53 @@ PYTHON_CAPABILITY_DEFINITIONS = (
         "native notifications",
         "native CTFd and Discord notifications",
     ),
+    PythonCapabilityDefinition(
+        "text_stego",
+        "dayi.text_stego",
+        "dayi-stego-solver",
+        "Text steganography",
+        "bounded core text-steganography analysis",
+    ),
+    PythonCapabilityDefinition(
+        "document_stego",
+        "dayi.document.openxml",
+        "dayi-stego-solver",
+        "Document steganography",
+        "bounded local Word, spreadsheet, presentation, OpenDocument, and RTF "
+        "analysis; network-free",
+    ),
     PythonCapabilityDefinition("pillow", "PIL", "Pillow", "Pillow", "OCR image loading"),
     PythonCapabilityDefinition(
         "pytesseract", "pytesseract", "pytesseract", "pytesseract", "OCR bridge"
     ),
+    PythonCapabilityDefinition(
+        "ocr_runtime",
+        "dayi.tools.ocr_scanner",
+        "dayi-stego-solver",
+        "Advanced OCR",
+        "bounded local multi-pass OCR",
+    ),
     PythonCapabilityDefinition("pypdf", "pypdf", "pypdf", "pypdf", "PDF analysis"),
     PythonCapabilityDefinition(
         "oletools", "oletools", "oletools", "oletools", "OLE/VBA macro analysis"
+    ),
+    PythonCapabilityDefinition(
+        "qr_analysis",
+        "dayi.tools.qr_scanner",
+        "dayi-stego-solver",
+        "QR analysis",
+        "passive local QR decoding with optional backends",
+    ),
+    PythonCapabilityDefinition(
+        "opencv_qr",
+        "cv2",
+        "opencv-python-headless",
+        "OpenCV QR",
+        "preferred QR backend",
+        ("opencv-python",),
+    ),
+    PythonCapabilityDefinition(
+        "pyzbar_qr", "pyzbar.pyzbar", "pyzbar", "pyzbar QR", "second QR backend"
     ),
     PythonCapabilityDefinition("scapy", "scapy", "scapy", "Scapy", "PCAP analysis"),
     PythonCapabilityDefinition(
@@ -409,20 +454,29 @@ def diagnose_python_capability(
         )
 
     location = _spec_location(spec)
-    try:
-        version = version_func(definition.distribution)
+    version = None
+    metadata_status = "missing"
+    selected_distribution = definition.distribution
+    for distribution in (
+        definition.distribution,
+        *definition.distribution_alternatives,
+    ):
+        try:
+            version = version_func(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        except Exception:
+            metadata_status = "broken"
+            selected_distribution = distribution
+            break
         metadata_status = "ok"
-    except importlib.metadata.PackageNotFoundError:
-        version = None
-        metadata_status = "missing"
-    except Exception:
-        version = None
-        metadata_status = "broken"
+        selected_distribution = distribution
+        break
 
     return PythonCapabilityDiagnostic(
         definition.capability_id,
         definition.import_name,
-        definition.distribution,
+        selected_distribution,
         definition.display_name,
         True,
         version,
@@ -431,6 +485,36 @@ def diagnose_python_capability(
         location,
         _location_status(location, roots),
     )
+
+
+def diagnose_opencv_qr_capability(
+    definition: PythonCapabilityDefinition,
+) -> PythonCapabilityDiagnostic:
+    """Validate both OpenCV distribution identity and the QR API surface."""
+    diagnostic = diagnose_python_capability(definition)
+    if not diagnostic.available:
+        return diagnostic
+    try:
+        module = importlib.import_module("cv2")
+    except Exception:
+        return PythonCapabilityDiagnostic(
+            **{
+                **asdict(diagnostic),
+                "available": False,
+                "metadata_status": "import-failed",
+                "capability": "OpenCV module metadata exists but import failed",
+            }
+        )
+    if not callable(getattr(module, "QRCodeDetector", None)):
+        return PythonCapabilityDiagnostic(
+            **{
+                **asdict(diagnostic),
+                "available": False,
+                "metadata_status": "api-missing",
+                "capability": "OpenCV is installed but QRCodeDetector is unavailable",
+            }
+        )
+    return diagnostic
 
 
 def diagnose_ctfshit_capability(
@@ -524,6 +608,145 @@ def diagnose_native_notification_capability() -> PythonCapabilityDiagnostic:
     )
 
 
+def diagnose_qr_capability() -> PythonCapabilityDiagnostic:
+    """Select QR capability exactly as runtime does, without scanning an image."""
+    from dayi.tools.qr_scanner import select_qr_backend
+
+    backend = select_qr_backend()
+    if backend is None:
+        return PythonCapabilityDiagnostic(
+            capability_id="qr_analysis",
+            import_name="dayi.tools.qr_scanner",
+            distribution="dayi-stego-solver",
+            display_name="QR analysis",
+            available=False,
+            version=None,
+            metadata_status="backend-unavailable",
+            capability="passive local QR analysis unavailable; install OpenCV, pyzbar/zbar, or zbarimg",
+            location=None,
+            location_status="unavailable",
+        )
+    return PythonCapabilityDiagnostic(
+        capability_id="qr_analysis",
+        import_name="dayi.tools.qr_scanner",
+        distribution="dayi-stego-solver",
+        display_name="QR analysis",
+        available=True,
+        version=None,
+        metadata_status="ok",
+        capability=(
+            f"passive local QR analysis available via {backend.name}; "
+            "decoded URLs and payloads are never opened or executed"
+        ),
+        location=None,
+        location_status=backend.name,
+    )
+
+
+def diagnose_ocr_capability(
+    requested_language: str = "eng",
+) -> PythonCapabilityDiagnostic:
+    """Inspect local OCR APIs and language packs without scanning a target."""
+    module_names = ("PIL", "pytesseract")
+    try:
+        modules_present = all(
+            importlib.util.find_spec(name) is not None for name in module_names
+        )
+    except (ImportError, ModuleNotFoundError, ValueError):
+        modules_present = False
+    executable_present = shutil.which("tesseract") is not None
+    languages: list[str] | None = None
+    if modules_present and executable_present:
+        executable = shutil.which("tesseract")
+        stdout_buffer = bytearray()
+        stderr_buffer = bytearray()
+        process = None
+        readers: tuple[threading.Thread, ...] = ()
+        try:
+            process = subprocess.Popen(
+                [str(executable), "--list-langs"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            readers = (
+                threading.Thread(
+                    target=_drain_bounded,
+                    args=(process.stdout, stdout_buffer),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_drain_bounded,
+                    args=(process.stderr, stderr_buffer),
+                    daemon=True,
+                ),
+            )
+            for reader in readers:
+                reader.start()
+            process.wait(timeout=VERSION_PROBE_TIMEOUT_SECONDS)
+            for reader in readers:
+                reader.join(timeout=1.0)
+            languages = sorted(
+                {
+                    line.strip()
+                    for line in stdout_buffer.decode(
+                        "utf-8", errors="replace"
+                    ).splitlines()[1:65]
+                    if re.fullmatch(r"[A-Za-z0-9_-]+", line.strip())
+                }
+            )
+        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+            if process is not None:
+                try:
+                    process.kill()
+                    process.wait(timeout=1.0)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            languages = None
+        finally:
+            for reader in readers:
+                reader.join(timeout=1.0)
+    available = modules_present and executable_present
+    missing_requested = bool(
+        available and languages is not None
+        and any(item not in languages for item in requested_language.split("+"))
+    )
+    if not available:
+        status = "runtime-unavailable"
+        detail = (
+            "bounded local OCR unavailable; Pillow, pytesseract, and "
+            "Tesseract are optional"
+        )
+    elif missing_requested:
+        status = "language-missing"
+        detail = (
+            "local OCR available; requested/default language unavailable: "
+            f"{requested_language}"
+        )
+    else:
+        status = "ok"
+        language_detail = (
+            ", ".join(languages) if languages is not None else "not safely discoverable"
+        )
+        detail = (
+            f"bounded local OCR available; requested/default language: {requested_language}; "
+            f"installed languages: {language_detail}"
+        )
+    return PythonCapabilityDiagnostic(
+        capability_id="ocr_runtime",
+        import_name="dayi.tools.ocr_scanner",
+        distribution="dayi-stego-solver",
+        display_name="Advanced OCR",
+        available=available and not missing_requested,
+        version=None,
+        metadata_status=status,
+        capability=detail,
+        location=None,
+        location_status="local",
+    )
+
+
 def diagnose_core(
     *,
     version_info: Sequence[int] | None = None,
@@ -611,6 +834,12 @@ def run_diagnostics(
             )
         elif definition.capability_id == "native_notifications":
             capability = diagnose_native_notification_capability()
+        elif definition.capability_id == "qr_analysis":
+            capability = diagnose_qr_capability()
+        elif definition.capability_id == "ocr_runtime":
+            capability = diagnose_ocr_capability()
+        elif definition.capability_id == "opencv_qr":
+            capability = diagnose_opencv_qr_capability(definition)
         else:
             capability = diagnose_python_capability(definition)
         capabilities_list.append(capability)

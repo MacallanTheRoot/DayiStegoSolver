@@ -24,11 +24,14 @@ ROBUSTNESS (Token Sanitization):
     binary garbage from strings/binwalk output from crashing those tools.
 """
 import asyncio
+import gzip
 import logging
 import multiprocessing
 import os
+import pickle
 import shutil
 import signal
+import sys
 import time
 from enum import Enum
 from pathlib import Path
@@ -51,6 +54,10 @@ _KILL_GRACE_SECONDS: float = 2.0
 
 # Timeout for proc.wait() after kill — guards against kernel-level zombie stalls
 _ISOLATED_MEMORY_BYTES = 768 * 1024 * 1024
+_ISOLATED_REQUEST_BYTES = 1024 * 1024
+_ISOLATED_RESPONSE_BYTES = 64 * 1024 * 1024
+_ISOLATED_POLL_SECONDS = 0.01
+_ISOLATED_KILL_GRACE_SECONDS = 0.25
 _T = TypeVar("_T")
 
 
@@ -60,8 +67,10 @@ def _isolated_worker_entry(
     args: tuple[Any, ...],
     memory_bytes: int,
     cpu_seconds: int,
+    max_response_bytes: int,
 ) -> None:
-    """Execute a parser worker under POSIX resource limits."""
+    """Execute a parser worker under resource limits and bounded IPC."""
+    sink = None
     try:
         if os.name == "posix":
             os.setsid()
@@ -74,14 +83,50 @@ def _isolated_worker_entry(
                 resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
             except (ImportError, OSError, ValueError):
                 pass
-        connection.send((True, worker(*args)))
+        sink = open(os.devnull, "w", encoding="utf-8")
+        sys.stdout = sink
+        sys.stderr = sink
+        message: tuple[bool, Any] = (True, worker(*args))
     except BaseException as exc:
-        try:
-            connection.send((False, exc))
-        except Exception:
-            pass
+        message = (False, exc)
+    try:
+        payload = pickle.dumps(message, protocol=pickle.HIGHEST_PROTOCOL)
+        if len(payload) > max_response_bytes:
+            payload = pickle.dumps(
+                (False, RuntimeError("isolated worker response exceeded limit")),
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        connection.send_bytes(payload)
+    except Exception:
+        pass
     finally:
         connection.close()
+        if sink is not None:
+            sink.close()
+
+
+def _stop_isolated_process(process: multiprocessing.Process) -> None:
+    """Terminate, kill, and reap one isolated worker without leaving children."""
+    if not process.is_alive():
+        process.join(timeout=_ISOLATED_KILL_GRACE_SECONDS)
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            process.terminate()
+    else:
+        process.terminate()
+    process.join(timeout=_ISOLATED_KILL_GRACE_SECONDS)
+    if process.is_alive():
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                process.kill()
+        else:
+            process.kill()
+        process.join(timeout=1.0)
 
 
 async def async_run_isolated(
@@ -89,42 +134,59 @@ async def async_run_isolated(
     *args: Any,
     timeout: float,
     memory_bytes: int = _ISOLATED_MEMORY_BYTES,
+    max_response_bytes: int = _ISOLATED_RESPONSE_BYTES,
 ) -> _T:
-    """Run one untrusted parser in a killable, resource-bounded process."""
-    if os.name != "posix":
-        return await asyncio.wait_for(
-            asyncio.to_thread(worker, *args), timeout=max(1.0, timeout)
+    """Run one parser in a spawn-compatible, killable bounded process."""
+    bounded_timeout = max(0.01, timeout)
+    bounded_response = max(1024, max_response_bytes)
+    try:
+        request_size = len(
+            pickle.dumps((worker, args), protocol=pickle.HIGHEST_PROTOCOL)
         )
-    context = multiprocessing.get_context("fork")
+    except (pickle.PickleError, TypeError, AttributeError) as exc:
+        raise TypeError("isolated worker request is not serializable") from exc
+    if request_size > _ISOLATED_REQUEST_BYTES:
+        raise ValueError("isolated worker request exceeded limit")
+    context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
     process = context.Process(
         target=_isolated_worker_entry,
-        args=(child, worker, args, memory_bytes, max(1, int(timeout) + 1)),
+        args=(
+            child,
+            worker,
+            args,
+            memory_bytes,
+            max(1, int(bounded_timeout) + 1),
+            bounded_response,
+        ),
         daemon=True,
     )
-    process.start()
-    child.close()
-    receive_task = asyncio.create_task(asyncio.to_thread(parent.recv))
     try:
-        message = await asyncio.wait_for(
-            asyncio.shield(receive_task), timeout=max(1.0, timeout)
-        )
+        process.start()
+        child.close()
+        deadline = time.monotonic() + bounded_timeout
+        while not parent.poll():
+            if not process.is_alive():
+                if parent.poll():
+                    break
+                raise RuntimeError("isolated worker exited without a response")
+            if time.monotonic() >= deadline:
+                raise asyncio.TimeoutError
+            await asyncio.sleep(
+                min(_ISOLATED_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
+            )
+        payload = parent.recv_bytes(bounded_response)
+        message = pickle.loads(payload)
     except BaseException:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            if process.is_alive():
-                process.kill()
-        await asyncio.to_thread(process.join)
-        parent.close()
-        if not receive_task.done():
-            receive_task.cancel()
+        if process.pid is not None:
+            _stop_isolated_process(process)
         raise
     finally:
-        if process.is_alive() and receive_task.done():
-            await asyncio.to_thread(process.join)
-    parent.close()
-    await asyncio.to_thread(process.join)
+        parent.close()
+        child.close()
+    process.join(timeout=_ISOLATED_KILL_GRACE_SECONDS)
+    if process.is_alive():
+        _stop_isolated_process(process)
     if not message[0]:
         exception = message[1]
         if isinstance(exception, BaseException):
@@ -383,15 +445,18 @@ async def _write_stdin(
             pass
 
 
-async def async_run_command(
+async def async_run_command_bytes(
     cmd: list[str],
     tool_name: str,
     timeout: float = 60.0,
     cwd: Optional[Path] = None,
     stdin_data: Optional[bytes] = None,
-) -> tuple[int | None, str, str, float, bool]:
+    *,
+    stdout_limit: int | None = None,
+    stderr_limit: int | None = None,
+) -> tuple[int | None, bytes, bytes, float, bool, bool, bool]:
     """
-    Execute a subprocess asynchronously, capturing stdout and stderr.
+    Execute a subprocess while preserving bounded stdout and stderr bytes.
 
     Both pipes are continuously drained in small chunks while only a bounded
     prefix is retained, preventing deadlocks and unbounded output growth.
@@ -406,15 +471,18 @@ async def async_run_command(
         cwd:        Optional working directory for the subprocess.
         stdin_data: Optional bytes to pipe into stdin.
 
-    Returns:
-        Tuple of (return_code, stdout, stderr, elapsed_seconds, timed_out).
-        return_code is None if the process timed out or failed to start.
+    The final booleans report stdout and stderr truncation. Callers handling
+    binary protocols must reject truncated records rather than decode a prefix.
     """
     start = time.monotonic()
+    stdout_limit = PIPE_OUTPUT_LIMIT if stdout_limit is None else stdout_limit
+    stderr_limit = PIPE_OUTPUT_LIMIT if stderr_limit is None else stderr_limit
     timed_out = False
     rc: int | None = None
-    stdout_str = ""
-    stderr_str = ""
+    raw_stdout = b""
+    raw_stderr = b""
+    stdout_truncated = False
+    stderr_truncated = False
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -432,10 +500,10 @@ async def async_run_command(
         )
 
         stdout_task = asyncio.create_task(
-            _read_stream_bounded(proc.stdout, PIPE_OUTPUT_LIMIT)
+            _read_stream_bounded(proc.stdout, max(0, stdout_limit))
         )
         stderr_task = asyncio.create_task(
-            _read_stream_bounded(proc.stderr, PIPE_OUTPUT_LIMIT)
+            _read_stream_bounded(proc.stderr, max(0, stderr_limit))
         )
         stdin_task = asyncio.create_task(_write_stdin(proc.stdin, stdin_data))
 
@@ -460,23 +528,53 @@ async def async_run_command(
             await asyncio.shield(stdin_task)
             raw_stdout, stdout_truncated = await asyncio.shield(stdout_task)
             raw_stderr, stderr_truncated = await asyncio.shield(stderr_task)
-            stdout_str = raw_stdout.decode("utf-8", errors="replace")
-            stderr_str = raw_stderr.decode("utf-8", errors="replace")
-            if stdout_truncated:
-                stdout_str += (
-                    f"\n... [subprocess stdout truncated at {PIPE_OUTPUT_LIMIT} bytes] ..."
-                )
-            if stderr_truncated:
-                stderr_str += (
-                    f"\n... [subprocess stderr truncated at {PIPE_OUTPUT_LIMIT} bytes] ..."
-                )
 
     except FileNotFoundError:
         # Defensive guard; should not occur after is_tool_available() check.
         logger.debug(f"[{tool_name}] Çalıştırılacak program PATH üzerinde bulunamadı.")
 
     elapsed = time.monotonic() - start
-    return rc, stdout_str, stderr_str, elapsed, timed_out
+    return (
+        rc,
+        raw_stdout,
+        raw_stderr,
+        elapsed,
+        timed_out,
+        stdout_truncated,
+        stderr_truncated,
+    )
+
+
+async def async_run_command(
+    cmd: list[str],
+    tool_name: str,
+    timeout: float = 60.0,
+    cwd: Optional[Path] = None,
+    stdin_data: Optional[bytes] = None,
+) -> tuple[int | None, str, str, float, bool]:
+    """Run a subprocess and decode its bounded diagnostic text as UTF-8."""
+    (
+        rc,
+        raw_stdout,
+        raw_stderr,
+        elapsed,
+        timed_out,
+        stdout_truncated,
+        stderr_truncated,
+    ) = await async_run_command_bytes(
+        cmd,
+        tool_name,
+        timeout=timeout,
+        cwd=cwd,
+        stdin_data=stdin_data,
+    )
+    stdout = raw_stdout.decode("utf-8", errors="replace")
+    stderr = raw_stderr.decode("utf-8", errors="replace")
+    if stdout_truncated:
+        stdout += f"\n... [subprocess stdout truncated at {PIPE_OUTPUT_LIMIT} bytes] ..."
+    if stderr_truncated:
+        stderr += f"\n... [subprocess stderr truncated at {PIPE_OUTPUT_LIMIT} bytes] ..."
+    return rc, stdout, stderr, elapsed, timed_out
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +597,13 @@ def iter_wordlist_lines(wordlist_path: Path, limit: int = 0) -> Iterator[str]:
     """
     count = 0
     try:
-        with open(wordlist_path, encoding="utf-8", errors="replace") as fh:
+        opener = gzip.open if wordlist_path.suffix.lower() == ".gz" else open
+        with opener(
+            wordlist_path,
+            mode="rt",
+            encoding="utf-8",
+            errors="replace",
+        ) as fh:
             while True:
                 raw_line = fh.readline(MAX_WORDLIST_LINE_CHARS + 1)
                 if not raw_line:

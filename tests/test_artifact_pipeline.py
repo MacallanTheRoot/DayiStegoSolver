@@ -51,6 +51,23 @@ class ArtifactPipelineTests(unittest.TestCase):
             self.assertEqual(payload["artifacts_found"][0]["type"], "credential")
             self.assertIn("SONRAKİ AŞAMA", txt_path.read_text(encoding="utf-8"))
 
+    def test_verbose_runner_includes_possible_domain_findings(self) -> None:
+        quiet_result = self._result("abc.dev")
+        self.runner._attach_artifacts(quiet_result)
+        self.assertEqual(quiet_result.artifacts_found, [])
+
+        verbose_runner = DayiRunner(
+            Path("sample.png"),
+            re.compile(r"FLAG\{.*?\}"),
+            include_possible_artifacts=True,
+        )
+        verbose_result = self._result("abc.dev")
+        verbose_runner._attach_artifacts(verbose_result)
+        self.assertEqual(
+            [(finding.artifact_type, finding.preview) for finding in verbose_result.artifacts_found],
+            [("domain", "abc.dev")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

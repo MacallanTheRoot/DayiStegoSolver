@@ -47,6 +47,8 @@ from dayi.runner import (
 )
 from dayi.reporter import ScanReport, write_report, export_markdown_writeup
 from dayi.integrations import build_integration
+from dayi.wordlists import resolve_wordlist
+from dayi.tools.ocr_scanner import validate_ocr_language
 
 
 def _positive_float(value: str) -> float:
@@ -71,6 +73,14 @@ def _nonnegative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("value must not be negative")
     return parsed
+
+
+def _ocr_language(value: str) -> str:
+    """Validate a language expression without accepting Tesseract options."""
+    try:
+        return validate_ocr_language(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _build_scan_parent_parser() -> argparse.ArgumentParser:
@@ -107,6 +117,14 @@ def _build_scan_parent_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Şifreli araçlar için wordlist dosyası (örn: rockyou.txt)",
+    )
+    parser.add_argument(
+        "--require-wordlist",
+        action="store_true",
+        help=(
+            "İstenen wordlist çözülemezse taramayı başlatmadan hata ver. "
+            "Varsayılan davranış wordlist olmadan kısıtlı taramaya devam etmektir"
+        ),
     )
     parser.add_argument(
         "--output", "-o",
@@ -167,6 +185,18 @@ def _build_scan_parent_parser() -> argparse.ArgumentParser:
         "--verbose", "-v",
         action="store_true",
         help="Ayrıntılı debug çıktısı",
+    )
+    parser.add_argument(
+        "--ocr-lang",
+        metavar="LANG",
+        type=_ocr_language,
+        default="eng",
+        help="Tesseract dil paketi ifadesi (örn: eng, tur, eng+tur). Varsayılan: eng",
+    )
+    parser.add_argument(
+        "--ocr-exhaustive",
+        action="store_true",
+        help="Güvenlik sınırlarını koruyarak ek OCR dönüş/işleme geçişlerini çalıştır",
     )
 
     # ── v2.0 Integration arguments ────────────────────────────────────────────
@@ -391,14 +421,23 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
         logger.error(f"[✗] '{target}' bir dosya değil. Klasör mü verdin bana?!")
         return None, 1
 
-    wordlist: Path | None = None
-    if args.wordlist:
-        if not args.wordlist.exists():
-            logger.warning(
-                f"[!] Wordlist '{args.wordlist}' bulunamadı. Brute-force atlanacak, dikkat!"
-            )
-        else:
-            wordlist = args.wordlist
+    wordlist_resolution = resolve_wordlist(args.wordlist)
+    wordlist = wordlist_resolution.resolved
+    if wordlist_resolution.requested is not None:
+        logger.info(f"[*] İstenen wordlist: {wordlist_resolution.requested}")
+        logger.info(f"[*] Çözülen wordlist: {wordlist or 'yok'}")
+    if wordlist_resolution.requested is not None and wordlist is None:
+        logger.warning(
+            "[!] İstenen wordlist çözülemedi; MAIN_FALLBACK/steghide_main_bf "
+            "ve MAIN_FINAL/outguess_main_bf devre dışı. Kısıtlı tarama devam edecek."
+        )
+    if args.require_wordlist and wordlist is None:
+        requested_label = str(args.wordlist) if args.wordlist is not None else "yok"
+        logger.error(
+            "[✗] --require-wordlist etkin ancak kullanılabilir wordlist yok "
+            f"(istenen: {requested_label}). --wordlist ile geçerli bir dosya ver."
+        )
+        return None, 1
 
     pattern_config = build_flag_pattern_config(args.flag)
     if pattern_config is None:
@@ -462,6 +501,9 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
         workspace_parent=workspace_parent,
         pattern_display=pattern_config.display,
         pattern_source=pattern_config.source,
+        include_possible_artifacts=args.verbose,
+        ocr_language=args.ocr_lang,
+        ocr_exhaustive=args.ocr_exhaustive,
     )
 
     logger.info("[*] Tarama başlıyor... Sabret yeğenim, Dayı çalışıyor.\n")

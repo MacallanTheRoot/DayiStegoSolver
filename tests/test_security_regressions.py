@@ -148,7 +148,7 @@ sys.meta_path.insert(0, Blocker())
 from dayi.tools._plugin import discover_plugins
 registry = discover_plugins()
 assert not registry.issues, registry.issues
-assert len(registry.plugins) == 19
+assert len(registry.plugins) == 22
 '''
         completed = subprocess.run(
             [sys.executable, "-c", code],

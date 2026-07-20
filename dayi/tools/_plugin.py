@@ -52,6 +52,9 @@ class PluginContext:
     bf_threads: int
     bf_limit: int
     workspace: Path
+    verbose: bool = False
+    ocr_language: str = "eng"
+    ocr_exhaustive: bool = False
     results_by_plugin: Mapping[str, ToolResult] = field(default_factory=dict)
     progress_reporter: ProgressReporter = field(
         default=_ignore_progress,
@@ -109,7 +112,6 @@ def extraction_evidence_success(result: ToolResult) -> bool:
         and not result.error
         and (
             result.extraction_succeeded
-            or result.flags_found
             or any(result.extracted_flags.values())
         )
     )

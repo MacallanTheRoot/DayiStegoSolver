@@ -379,15 +379,15 @@ class NativeDeliveryTests(unittest.IsolatedAsyncioTestCase):
             webhook_url="https://discord.invalid/hook",
         )
         with patch(
-            "dayi.integrations._urllib_post_json",
-            side_effect=[
+            "dayi.integrations._run_urllib_post_isolated",
+            new=AsyncMock(side_effect=[
                 _HttpResponse(
                     201,
                     json.dumps({"data": {"status": "correct"}}).encode("utf-8"),
                     False,
                 ),
                 _HttpResponse(400, None, False),
-            ],
+            ]),
         ) as post:
             results = await manager._dispatch("FLAG{one}", "tool")
 
@@ -885,7 +885,8 @@ class NetworkHardeningTests(unittest.IsolatedAsyncioTestCase):
             aiohttp=None, webhook_url="https://hooks.invalid/path"
         )
         with patch(
-            "dayi.integrations._urllib_post_json", side_effect=TimeoutError()
+            "dayi.integrations._run_urllib_post_isolated",
+            new=AsyncMock(side_effect=TimeoutError()),
         ):
             aiohttp_result = await aiohttp_manager._deliver("discord", "FLAG{one}")
             urllib_result = await urllib_manager._deliver("discord", "FLAG{one}")
@@ -936,8 +937,10 @@ class NetworkHardeningTests(unittest.IsolatedAsyncioTestCase):
                     challenge_id=1,
                 )
                 with patch(
-                    "dayi.integrations._urllib_post_json",
-                    return_value=_HttpResponse(status, raw_body, False),
+                    "dayi.integrations._run_urllib_post_isolated",
+                    new=AsyncMock(
+                        return_value=_HttpResponse(status, raw_body, False)
+                    ),
                 ):
                     aiohttp_result = await aiohttp_manager._deliver(
                         "ctfd", "FLAG{one}"

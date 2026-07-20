@@ -5,7 +5,7 @@ Real-time flag notification and auto-submission integration for Dayı v3.0.
 
 One native transport is selected when the manager is created:
   Priority 1 — aiohttp : direct asynchronous HTTP
-  Priority 2 — urllib  : stdlib synchronous HTTP via run_in_executor
+  Priority 2 — urllib  : stdlib HTTP in a killable isolated worker
 
 Public API:
   IntegrationManager(webhook, ctfd_url, ctfd_token, challenge_id, challenge_name)
@@ -30,9 +30,10 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from dayi import __version__
+from dayi.tools._base import async_run_isolated
 
 logger = logging.getLogger("dayi")
 
@@ -42,6 +43,7 @@ NOTIFICATION_CONNECT_TIMEOUT = 5.0
 NOTIFICATION_READ_TIMEOUT = 5.0
 URLLIB_REQUEST_TIMEOUT = 10.0
 CTFD_RESPONSE_LIMIT = 64 * 1024
+URLLIB_WORKER_RESPONSE_LIMIT = 128 * 1024
 _CTFD_ATTEMPT_PATH = "/api/v1/challenges/attempt"
 _DEFAULT_CHALLENGE_NAME = "Dayı Auto-Solve"
 
@@ -289,9 +291,8 @@ def _urllib_post_json(
     """
     Blocking HTTP POST with a JSON body via stdlib urllib.
 
-    Intended to run inside asyncio.run_in_executor() so the event loop is
-    never blocked. Network errors propagate to the async boundary for safe
-    categorization.
+    Intended to run in a killable isolated process. Network errors propagate
+    to the async boundary for safe categorization.
 
     Args:
         url:           Target URL.
@@ -317,6 +318,28 @@ def _urllib_post_json(
             return _HttpResponse(resp.status, response_body, oversized)
     except urllib.error.HTTPError as exc:
         return _HttpResponse(exc.code, None, False)
+
+
+async def _run_urllib_post_isolated(
+    url: str,
+    payload: dict,
+    extra_headers: dict | None,
+    read_response_body: bool,
+    *,
+    timeout: float = NOTIFICATION_TOTAL_TIMEOUT,
+    worker: Callable[..., _HttpResponse] | None = None,
+) -> _HttpResponse:
+    """Run one urllib request under a genuine killable total deadline."""
+    selected_worker = _urllib_post_json if worker is None else worker
+    return await async_run_isolated(
+        selected_worker,
+        url,
+        payload,
+        extra_headers,
+        read_response_body,
+        timeout=max(0.01, timeout),
+        max_response_bytes=URLLIB_WORKER_RESPONSE_LIMIT,
+    )
 
 
 async def _read_aiohttp_body_bounded(response) -> tuple[bytes | None, bool]:
@@ -687,16 +710,14 @@ class IntegrationManager:
                 )
 
     async def _send_ctfd_urllib(self, flag: str) -> DeliveryResult:
-        loop = asyncio.get_running_loop()
         headers = {"Authorization": f"Token {self.ctfd_token}"}
         url = f"{self.ctfd_url}/api/v1/challenges/attempt"
-        response = await loop.run_in_executor(
-            None,
-            _urllib_post_json,
+        response = await _run_urllib_post_isolated(
             url,
             self._ctfd_payload(flag),
             headers,
             True,
+            timeout=NOTIFICATION_TOTAL_TIMEOUT,
         )
         return _ctfd_delivery_result(
             response.status_code,
@@ -705,14 +726,12 @@ class IntegrationManager:
         )
 
     async def _send_discord_urllib(self, flag: str) -> DeliveryResult:
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            _urllib_post_json,
+        response = await _run_urllib_post_isolated(
             self.webhook_url,
             self._discord_payload(flag),
             None,
             False,
+            timeout=NOTIFICATION_TOTAL_TIMEOUT,
         )
         if response.status_code == 204:
             return DeliveryResult("discord", True, True, 204, None)

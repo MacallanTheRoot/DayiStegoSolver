@@ -313,8 +313,10 @@ class PythonCapabilityTests(unittest.TestCase):
         self.assertEqual(
             [item.capability_id for item in PYTHON_CAPABILITY_DEFINITIONS],
             [
-                "rich", "aiohttp", "native_notifications", "pillow",
-                "pytesseract", "pypdf", "oletools", "scapy", "ctfshit",
+                "rich", "aiohttp", "native_notifications", "text_stego",
+                "document_stego", "pillow", "pytesseract", "ocr_runtime",
+                "pypdf", "oletools", "qr_analysis", "opencv_qr",
+                "pyzbar_qr", "scapy", "ctfshit",
             ],
         )
 

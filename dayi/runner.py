@@ -209,6 +209,9 @@ class DayiRunner:
         workspace_parent: Path | None = None,
         pattern_display: str | None = None,
         pattern_source: str = "user",
+        include_possible_artifacts: bool = False,
+        ocr_language: str = "eng",
+        ocr_exhaustive: bool = False,
     ) -> None:
         self.target = target
         self.pattern = pattern
@@ -222,6 +225,9 @@ class DayiRunner:
         self.workspace_parent = workspace_parent
         self.pattern_display = pattern_display or pattern.pattern
         self.pattern_source = pattern_source
+        self.include_possible_artifacts = include_possible_artifacts
+        self.ocr_language = ocr_language
+        self.ocr_exhaustive = ocr_exhaustive
 
         self._partial_results: list[ToolResult] = []
         self._results_by_plugin: dict[str, ToolResult] = {}
@@ -409,6 +415,9 @@ class DayiRunner:
             bf_threads=self.bf_threads,
             bf_limit=self.bf_limit,
             workspace=workspace,
+            verbose=self.include_possible_artifacts,
+            ocr_language=self.ocr_language,
+            ocr_exhaustive=self.ocr_exhaustive,
             results_by_plugin=MappingProxyType(dict(self._results_by_plugin)),
             progress_reporter=lambda attempted, total: loop.call_soon_threadsafe(
                 self._ui_call, "plugin_progress", plugin_id, attempted, total
@@ -744,6 +753,7 @@ class DayiRunner:
                 _artifact_scan_content(result.tool_name, content),
                 source=source,
                 max_findings=remaining,
+                include_possible=self.include_possible_artifacts,
             ):
                 key = (
                     finding.artifact_type,
@@ -799,14 +809,49 @@ class DayiRunner:
 
         if all_flags:
             for flag in all_flags:
-                sources = [
-                    result.tool_name
-                    for result in self._partial_results
-                    if flag in result.flags_found
-                    or any(
-                        flag in hits for hits in result.extracted_flags.values()
+                sources: list[str] = []
+                for result in self._partial_results:
+                    has_precise_image_source = (
+                        result.tool_name in {"ocr_scanner", "qr_scanner"}
+                        and any(flag in hits for hits in result.extracted_flags.values())
                     )
-                ]
+                    if (
+                        flag in result.flags_found
+                        and not has_precise_image_source
+                        and result.tool_name not in sources
+                    ):
+                        sources.append(result.tool_name)
+                    for label, hits in result.extracted_flags.items():
+                        if flag not in hits:
+                            continue
+                        if result.tool_name in {"text_stego", "document_stego"} and label.startswith(
+                            ("text_stego:", "document:", "document_style:")
+                        ):
+                            source = label
+                        elif result.tool_name == "ocr_scanner":
+                            matching = next(
+                                (
+                                    item for item in result.ocr_findings
+                                    if item.source == label and flag in item.flags_found
+                                ),
+                                None,
+                            )
+                            if matching is not None:
+                                source = f"ocr:{label}:{matching.variant.name}"
+                                if matching.decoder_chain:
+                                    source += ">" + ">".join(matching.decoder_chain)
+                                if label.startswith("document_extracted/"):
+                                    source = f"document:{source}"
+                            elif label.startswith("document_extracted/"):
+                                source = f"document:{label}>ocr"
+                            else:
+                                source = result.tool_name
+                        elif result.tool_name == "qr_scanner" and ">qr:" in label:
+                            source = label
+                        else:
+                            source = result.tool_name
+                        if source not in sources:
+                            sources.append(source)
                 self._ui_call(
                     "show_flag",
                     flag,

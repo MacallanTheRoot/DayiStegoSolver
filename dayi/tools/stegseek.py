@@ -87,7 +87,11 @@ async def run_stegseek(
     with tempfile.TemporaryDirectory(prefix="dayi_stegseek_") as tmpdir_str:
         out_path = Path(tmpdir_str) / "stegseek_extracted"
 
-        if wordlist_path and wordlist_path.exists():
+        if (
+            wordlist_path
+            and wordlist_path.exists()
+            and wordlist_path.suffix.lower() != ".gz"
+        ):
             cmd = [BINARY, str(target), str(wordlist_path), str(out_path), "--quiet"]
         else:
             # info mode: attempt with empty passphrase

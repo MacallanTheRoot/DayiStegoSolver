@@ -22,11 +22,16 @@ import re
 import tempfile
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+from dayi.extraction import (
+    MAX_EXTRACTION_VALIDATION_BYTES,
+    ExtractionEvidence,
+    validate_extracted_payload,
+)
 from dayi.reporter import ToolResult
-from dayi.scanner import scan_file
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -101,20 +106,39 @@ async def run_outguess(
 
         flags: list[str] = []
         extracted_flags: dict[str, list[str]] = {}
+        extraction_succeeded = False
 
         if not timed_out:
-            logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
             flags = list(dict.fromkeys(
                 [m.group(0) for m in flag_pattern.finditer(stdout)] +
                 [m.group(0) for m in flag_pattern.finditer(stderr)]
             ))
 
-            if out_path.exists():
-                hits = await asyncio.to_thread(scan_file, out_path, flag_pattern)
+            evidence = await asyncio.to_thread(
+                validate_extracted_payload,
+                out_path,
+                flag_pattern,
+            )
+            extraction_succeeded = evidence.verified
+            if evidence.verified:
+                logger.info(
+                    TOOL_SUCCESS_MESSAGES.get(
+                        TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]
+                    )
+                )
+                hits = list(evidence.flags_found)
                 if hits:
                     extracted_flags["outguess_extracted"] = hits
                     flags = list(dict.fromkeys(flags + hits))
-                    logger.log(25, f"[outguess] 🎯 Çıkarılan dosyada {len(hits)} flag bulundu!")
+                    logger.log(
+                        25,
+                        f"[outguess] 🎯 Çıkarılan dosyada {len(hits)} flag bulundu!",
+                    )
+            elif evidence.non_empty:
+                logger.info(
+                    "[outguess] Çıktı üretildi ama güçlü çıkarma kanıtı "
+                    "doğrulanamadı; başarı saymıyorum."
+                )
 
         return ToolResult(
             tool_name=TOOL_NAME,
@@ -126,6 +150,7 @@ async def run_outguess(
             elapsed_seconds=elapsed,
             timed_out=timed_out,
             extracted_flags=extracted_flags,
+            extraction_succeeded=extraction_succeeded,
         )
 
 
@@ -209,32 +234,103 @@ async def run_outguess_bruteforce(
     found_password: str | None = None
     found_flags: list[str] = []
     total_tested = 0
+    unverified_outputs = 0
     progress_total = len(wordlist_data) if wordlist_data is not None else (
         bf_limit or None
     )
     start = time.monotonic()
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def try_password(password: str, tmpdir: Path) -> tuple[bool, list[str], str]:
-        """Attempt extraction with a single password. Returns (success, flags, password)."""
+    async def try_password(
+        password: str,
+        tmpdir: Path,
+        baseline: ExtractionEvidence | None,
+    ) -> tuple[ExtractionEvidence, str]:
+        """Attempt one password and return bounded extraction evidence."""
         out_path = tmpdir / f"out_{uuid.uuid4().hex}.bin"
         cmd = [BINARY, "-k", password, "-r", str(target), str(out_path)]
-        async with semaphore:
+        try:
+            async with semaphore:
+                rc, _, _, _, timed_out = await async_run_command(
+                    cmd, BF_TOOL_NAME, timeout_per_attempt
+                )
+            if timed_out or rc != 0:
+                evidence = await asyncio.to_thread(
+                    validate_extracted_payload,
+                    out_path,
+                    flag_pattern,
+                )
+                return replace(
+                    evidence,
+                    confidence="low" if evidence.non_empty else "none",
+                    verified=False,
+                ), password
+            evidence = await asyncio.to_thread(
+                validate_extracted_payload,
+                out_path,
+                flag_pattern,
+                baseline=baseline if baseline is not None else None,
+            )
+            if baseline is None:
+                return replace(
+                    evidence,
+                    differs_from_baseline=False,
+                    confidence="low" if evidence.non_empty else "none",
+                    verified=False,
+                ), password
+            return evidence, password
+        finally:
+            try:
+                out_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("[outguess_bf] Doğrulanmamış geçici çıktı temizlenemedi.")
+
+    async def build_baseline(
+        tmpdir: Path,
+    ) -> tuple[ExtractionEvidence | None, str, bool]:
+        """Generate one known-invalid comparison output for this target."""
+        baseline_path = tmpdir / "known_invalid_baseline.bin"
+        invalid_password = f"dayi-invalid-{uuid.uuid4().hex}"
+        cmd = [
+            BINARY,
+            "-k",
+            invalid_password,
+            "-r",
+            str(target),
+            str(baseline_path),
+        ]
+        try:
             rc, _, _, _, timed_out = await async_run_command(
                 cmd, BF_TOOL_NAME, timeout_per_attempt
             )
-        if (
-            not timed_out
-            and rc == 0
-            and out_path.is_file()
-            and out_path.stat().st_size > 0
-        ):
-            hits = await asyncio.to_thread(scan_file, out_path, flag_pattern)
-            return True, hits, password
-        return False, [], password
+            if timed_out:
+                return None, "known-invalid baseline timed out", True
+            if rc != 0:
+                return None, "known-invalid baseline command failed", False
+            evidence = await asyncio.to_thread(
+                validate_extracted_payload,
+                baseline_path,
+                flag_pattern,
+            )
+            if not evidence.output_exists:
+                return None, "known-invalid baseline produced no output", False
+            if (
+                not evidence.non_empty
+                or evidence.content_sha256 is None
+            ):
+                return None, "known-invalid baseline output was unreadable", False
+            if evidence.output_size > MAX_EXTRACTION_VALIDATION_BYTES:
+                return None, "known-invalid baseline exceeded validation limit", False
+            return evidence, "", False
+        finally:
+            try:
+                baseline_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("[outguess_bf] Geçici baseline çıktısı temizlenemedi.")
 
     with tempfile.TemporaryDirectory(prefix="dayi_outguess_bf_") as tmpdir_str:
         tmpdir = Path(tmpdir_str)
+        baseline, baseline_error, baseline_timed_out = await build_baseline(tmpdir)
         batch_size = max_concurrent * 4
         batch: list[str] = []
 
@@ -243,7 +339,7 @@ async def run_outguess_bruteforce(
             if len(batch) < batch_size:
                 continue
 
-            tasks = [try_password(pw, tmpdir) for pw in batch]
+            tasks = [try_password(pw, tmpdir, baseline) for pw in batch]
             results = await asyncio.gather(*tasks)
             total_tested += len(batch)
             if progress_callback is not None:
@@ -253,14 +349,16 @@ async def run_outguess_bruteforce(
                     logger.debug(f"[outguess_bf] İlerleme bildirimi iletilemedi yeğenim: {exc}")
             batch = []
 
-            for success, flags, pw in results:
-                if success:
+            for evidence, pw in results:
+                if evidence.verified and found_password is None:
                     found_password = pw
-                    found_flags.extend(flags)
+                    found_flags.extend(evidence.flags_found)
                     logger.log(
                         25,
                         f"[outguess_bf] 🎯 Şifre bulundu: '{pw}' — Yeğenim bu işi hallettik!",
                     )
+                elif evidence.non_empty:
+                    unverified_outputs += 1
 
             if found_password:
                 break
@@ -270,7 +368,7 @@ async def run_outguess_bruteforce(
 
         # Flush the last partial batch
         if batch and not found_password:
-            tasks = [try_password(pw, tmpdir) for pw in batch]
+            tasks = [try_password(pw, tmpdir, baseline) for pw in batch]
             results = await asyncio.gather(*tasks)
             total_tested += len(batch)
             if progress_callback is not None:
@@ -278,20 +376,24 @@ async def run_outguess_bruteforce(
                     progress_callback(total_tested, progress_total)
                 except Exception as exc:
                     logger.debug(f"[outguess_bf] İlerleme bildirimi iletilemedi yeğenim: {exc}")
-            for success, flags, pw in results:
-                if success:
+            for evidence, pw in results:
+                if evidence.verified and found_password is None:
                     found_password = pw
-                    found_flags.extend(flags)
+                    found_flags.extend(evidence.flags_found)
                     logger.log(
                         25,
                         f"[outguess_bf] 🎯 Şifre bulundu: '{pw}' — Yeğenim bu işi hallettik!",
                     )
+                elif evidence.non_empty:
+                    unverified_outputs += 1
 
     elapsed = time.monotonic() - start
     found_flags = list(dict.fromkeys(found_flags))
     stdout_summary = (
         f"Brute-force tamamlandı [{source_desc}]. {total_tested} şifre denendi.\n"
         f"Bulunan şifre: {found_password or 'Yok'}\n"
+        f"Doğrulanmamış çıktılar: {unverified_outputs}\n"
+        f"Geçersiz parola baseline: {'hazır' if baseline is not None else 'kullanılamadı'}\n"
     )
 
     return ToolResult(
@@ -299,10 +401,10 @@ async def run_outguess_bruteforce(
         command=cmd_template,
         return_code=0 if found_password else 1,
         stdout=stdout_summary,
-        stderr="",
+        stderr=baseline_error,
         flags_found=found_flags,
         elapsed_seconds=elapsed,
-        timed_out=False,
+        timed_out=baseline_timed_out,
         extraction_succeeded=found_password is not None,
     )
 

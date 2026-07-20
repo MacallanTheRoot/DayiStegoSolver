@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dayi-stego-solver"
-version = "4.1.0"
+version = "4.5.0"
 description = "CTF Steganography Brute-force & Analysis CLI — 'Hallederiz Yeğenim' Edition"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["ctf", "steganography", "stego", "security", "forensics", "ctfd", "jeopardy"]
@@ -35,6 +35,7 @@ dependencies = []
 integration = ["aiohttp>=3.9"]
 ui = ["rich>=13.7"]
 ocr = ["pytesseract>=0.3.10", "Pillow>=10"]
+qr = ["opencv-python-headless>=4.8"]
 pdf = ["pypdf>=4.0.0"]
 ole = ["oletools>=0.60.1"]
 pcap = ["scapy>=2.5.0"]

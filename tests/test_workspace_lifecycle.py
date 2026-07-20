@@ -14,6 +14,7 @@ from dayi.tools._plugin import (
     PluginRegistry,
     ToolPlugin,
 )
+from dayi.tools.text_stego_scanner import PLUGIN_SPECS as TEXT_STEGO_PLUGINS
 
 
 def _result(tool_name: str, extracted_dir: str | None = None) -> ToolResult:
@@ -132,6 +133,44 @@ class WorkspaceLifecycleTests(unittest.TestCase):
         self.assertEqual(len(captured_workspace), 1)
         self.assertFalse(captured_workspace[0].exists())
         self.assertIsNone(runner._workspace)
+
+    def test_carved_text_reaches_text_stego_after_extraction(self) -> None:
+        flag = "SiberVatan{carved_text_pipeline}"
+
+        async def fake_binwalk(context: PluginContext) -> ToolResult:
+            extracted = context.workspace / "binwalk" / "_target.extracted"
+            extracted.mkdir(parents=True)
+            (extracted / "payload.bin").write_text(flag, encoding="utf-8")
+            return _result("binwalk", str(extracted))
+
+        registry = PluginRegistry((
+            ToolPlugin(
+                plugin_id="binwalk",
+                phase=PluginPhase.CONCURRENT,
+                priority=1,
+                run=fake_binwalk,
+            ),
+            TEXT_STEGO_PLUGINS[0],
+        ))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "target.bin"
+            target.write_bytes(b"\x00\xff" * 64)
+            report = asyncio.run(
+                DayiRunner(
+                    target,
+                    re.compile(r"SiberVatan\{.*?\}"),
+                    registry=registry,
+                ).run_all()
+            )
+
+        self.assertEqual(report.all_flags, [flag])
+        text_result = next(
+            item for item in report.tool_results if item.tool_name == "text_stego"
+        )
+        self.assertTrue(
+            any("binwalk/" in source for source in text_result.extracted_flags)
+        )
 
 
 if __name__ == "__main__":

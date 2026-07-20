@@ -33,6 +33,8 @@ from typing import Any
 
 from dayi import __version__
 from dayi.ctfshit_resolver import resolve_writeup_exporter
+from dayi.document.model import DocumentFinding
+from dayi.image_analysis import OCRFinding, QRFinding
 from dayi.scanner import ArtifactFinding
 
 logger = logging.getLogger("dayi")
@@ -62,6 +64,9 @@ class ToolResult:
     extracted_flags: dict[str, list[str]] = field(default_factory=dict)
     artifacts_found: list[ArtifactFinding] = field(default_factory=list)
     extraction_succeeded: bool = False
+    document_findings: list[DocumentFinding] = field(default_factory=list)
+    ocr_findings: list[OCRFinding] = field(default_factory=list)
+    qr_findings: list[QRFinding] = field(default_factory=list)
 
 
 @dataclass
@@ -124,15 +129,50 @@ def _build_flag_attribution(tool_results: list[ToolResult]) -> dict[str, list[st
     attribution: dict[str, list[str]] = {}
 
     for tr in tool_results:
-        all_tool_flags: list[str] = list(tr.flags_found)
-        for hits in tr.extracted_flags.values():
-            all_tool_flags.extend(hits)
+        attributed: list[tuple[str, str]] = [
+            (flag, tr.tool_name) for flag in tr.flags_found
+            if tr.tool_name not in {"ocr_scanner", "qr_scanner"}
+            or not any(flag in hits for hits in tr.extracted_flags.values())
+        ]
+        for label, hits in tr.extracted_flags.items():
+            if tr.tool_name in {"text_stego", "document_stego"} and label.startswith(
+                ("text_stego:", "document:", "document_style:")
+            ):
+                attributed.extend((flag, label) for flag in hits)
+            elif tr.tool_name == "ocr_scanner":
+                for flag in hits:
+                    if label.startswith(("ocr:", "document:ocr:")):
+                        attributed.append((flag, label))
+                        continue
+                    matching = next(
+                        (
+                            item for item in tr.ocr_findings
+                            if item.source == label and flag in item.flags_found
+                        ),
+                        None,
+                    )
+                    if matching is not None:
+                        source = f"ocr:{label}:{matching.variant.name}"
+                        chain = matching.decoder_chain_for(flag)
+                        if chain:
+                            source += ">" + ">".join(chain)
+                        if label.startswith("document_extracted/"):
+                            source = f"document:{source}"
+                    elif label.startswith("document_extracted/"):
+                        source = f"document:{label}>ocr"
+                    else:
+                        source = tr.tool_name
+                    attributed.append((flag, source))
+            elif tr.tool_name == "qr_scanner" and ">qr:" in label:
+                attributed.extend((flag, label) for flag in hits)
+            else:
+                attributed.extend((flag, tr.tool_name) for flag in hits)
 
-        for flag in all_tool_flags:
+        for flag, source in attributed:
             if flag not in attribution:
                 attribution[flag] = []
-            if tr.tool_name not in attribution[flag]:
-                attribution[flag].append(tr.tool_name)
+            if source not in attribution[flag]:
+                attribution[flag].append(source)
 
     return attribution
 
@@ -143,6 +183,55 @@ def _format_artifact(finding: ArtifactFinding) -> str:
     if finding.decoded_preview is not None:
         rendered += f" → decoded: {finding.decoded_preview}"
     return rendered
+
+
+def _format_document_finding(finding: DocumentFinding) -> str:
+    """Render one already-sanitized, bounded document finding."""
+    chain = (
+        f" | chain: {'>'.join(finding.decoder_chain)}"
+        if finding.decoder_chain else ""
+    )
+    return (
+        f"[{finding.confidence}] {finding.category}/{finding.mechanism} "
+        f"@ {finding.source_member}: {finding.preview}{chain}"
+    )
+
+
+def _format_ocr_finding(finding: OCRFinding) -> str:
+    """Render one bounded OCR result without raw control characters."""
+    confidence = (
+        f"{finding.mean_word_confidence:.1f}"
+        if finding.mean_word_confidence is not None else "n/a"
+    )
+    if finding.flag_decoder_chains:
+        rendered_chains = ", ".join(
+            f"{flag}={'>'.join(flag_chain) if flag_chain else 'direct'}"
+            for flag, flag_chain in finding.flag_decoder_chains
+        )
+        chain = f" | flag chains: {rendered_chains}"
+    else:
+        chain = (
+            f" | chain: {'>'.join(finding.decoder_chain)}"
+            if finding.decoder_chain else ""
+        )
+    evidence = (
+        f" | evidence: {', '.join(finding.evidence)}"
+        if finding.evidence else ""
+    )
+    return (
+        f"[{finding.confidence}] {finding.source} / {finding.variant.name} "
+        f"(PSM {finding.variant.psm}; mean confidence: {confidence}): "
+        f"{finding.sanitized_text}{chain}{evidence}"
+    )
+
+
+def _format_qr_finding(finding: QRFinding) -> str:
+    """Render one passive QR result using its already-sanitized preview."""
+    preview = finding.payload_text or finding.payload_bytes_preview or "binary payload"
+    return (
+        f"[{finding.confidence}] {finding.source} / {finding.backend}:"
+        f"{finding.variant} [{finding.payload_type}] {preview}"
+    )
 
 
 def _artifact_to_dict(finding: ArtifactFinding) -> dict[str, str | None]:
@@ -215,6 +304,21 @@ def _build_notes_text(report: ScanReport) -> str:
             lines.append("    Artifact/ipucu:")
             for finding in tr.artifacts_found:
                 lines.append(f"      {_format_artifact(finding)}")
+
+        if tr.document_findings:
+            lines.append("    Document findings:")
+            for finding in tr.document_findings[:50]:
+                lines.append(f"      {_format_document_finding(finding)}")
+
+        if tr.ocr_findings:
+            lines.append("    OCR findings:")
+            for finding in tr.ocr_findings[:25]:
+                lines.append(f"      {_format_ocr_finding(finding)}")
+
+        if tr.qr_findings:
+            lines.append("    QR findings:")
+            for finding in tr.qr_findings[:25]:
+                lines.append(f"      {_format_qr_finding(finding)}")
 
         if tr.stdout.strip():
             lines.append("    STDOUT (özet):")
@@ -508,6 +612,23 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
             for finding in tr.artifacts_found:
                 lines.append(f"    {_format_artifact(finding)}")
 
+        if tr.document_findings:
+            lines.append("  Document Findings:")
+            for finding in tr.document_findings[:50]:
+                lines.append(
+                    f"    {_markdown_inline(_format_document_finding(finding))}"
+                )
+
+        if tr.ocr_findings:
+            lines.append("  OCR Findings:")
+            for finding in tr.ocr_findings[:25]:
+                lines.append(f"    {_markdown_inline(_format_ocr_finding(finding))}")
+
+        if tr.qr_findings:
+            lines.append("  QR Findings:")
+            for finding in tr.qr_findings[:25]:
+                lines.append(f"    {_markdown_inline(_format_qr_finding(finding))}")
+
         if tr.stdout.strip():
             lines.append("  STDOUT:")
             for out_line in _truncate(tr.stdout).splitlines():
@@ -549,11 +670,16 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
             "elapsed_seconds": round(tr.elapsed_seconds, 3),
             "timed_out":       tr.timed_out,
             "skipped":         tr.skipped,
+            "error":           tr.error,
             "skip_reason":     tr.skip_reason,
+            "extraction_succeeded": tr.extraction_succeeded,
             "flags_found":     tr.flags_found,
             "extracted_dir":   tr.extracted_dir,
             "extracted_flags": tr.extracted_flags,
             "artifacts_found": [_artifact_to_dict(item) for item in tr.artifacts_found],
+            "document_findings": [item.to_dict() for item in tr.document_findings],
+            "ocr_findings": [item.to_dict() for item in tr.ocr_findings],
+            "qr_findings": [item.to_dict() for item in tr.qr_findings],
             "stdout":          _truncate(tr.stdout),
             "stderr":          _truncate(tr.stderr),
         }

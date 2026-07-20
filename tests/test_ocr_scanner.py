@@ -103,6 +103,9 @@ class OCRScannerTests(unittest.TestCase):
             with patch(
                 "dayi.tools.ocr_scanner._load_ocr_dependencies",
                 return_value=dependencies,
+            ), patch(
+                "dayi.tools.ocr_scanner.shutil.which",
+                return_value=None,
             ):
                 result = asyncio.run(
                     run_ocr_scanner(
@@ -157,7 +160,11 @@ class OCRScannerTests(unittest.TestCase):
         self.assertEqual(result.flags_found, ["FLAG{ocr_workspace_success}"])
         self.assertEqual(
             result.extracted_flags,
-            {"binwalk/nested/flag.png": ["FLAG{ocr_workspace_success}"]},
+            {
+                "ocr:binwalk/nested/flag.png:original-psm3": [
+                    "FLAG{ocr_workspace_success}"
+                ]
+            },
         )
         self.assertEqual(
             sorted(path.name for path in image_module.opened),

@@ -12,6 +12,7 @@ import binascii
 import bisect
 import ipaddress
 import logging
+import math
 import os
 import re
 import unicodedata
@@ -49,7 +50,7 @@ _IPV6_CANDIDATE_PATTERN = re.compile(
     r"(?<![0-9A-Za-z:.])\[?[0-9A-Fa-f:.]{2,45}\]?(?![0-9A-Za-z:.])"
 )
 _DOMAIN_PATTERN = re.compile(
-    r"(?<![@\w.-])(?=[\w.-]{1,253}(?![\w.-]))"
+    r"(?<![\w.-])(?=[\w.-]{1,253}(?![\w.-]))"
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z]{2,63}(?![\w.-])",
     re.IGNORECASE,
@@ -90,6 +91,18 @@ _COMMON_DOMAIN_TLDS = frozenset({
     "it", "jp", "me", "mil", "net", "nl", "online", "org", "ru", "site",
     "tech", "tr", "tv", "uk", "us", "xyz",
 })
+_CTF_DOMAIN_LABELS = frozenset({
+    "admin", "challenge", "ctf", "flag", "hint", "paste", "stage",
+})
+_BINARY_ARTIFACT_SOURCES = (
+    "binwalk/", "document/embedded/", "outguess/", "steghide/", "stegseek/",
+    "strings/", "zsteg/",
+)
+_RELIABLE_ARTIFACT_SOURCES = (
+    "metadata", "ocr", "ole", "pcap", "pdf", "target",
+)
+
+ArtifactConfidence = Literal["confirmed", "probable", "possible", "noise"]
 
 
 @dataclass(frozen=True)
@@ -156,17 +169,93 @@ def _overlaps(span: tuple[int, int], occupied: list[tuple[int, int]]) -> bool:
     return index < len(occupied) and occupied[index][0] < end
 
 
-def _is_plausible_domain(domain: str) -> bool:
-    """Reject short binary-like labels while retaining useful CTF domains."""
-    if len(domain) < 6:
-        return False
-    labels = domain.rstrip(".").split(".")
-    if len(labels) < 2:
-        return False
-    tld = labels[-1]
-    return tld in _COMMON_DOMAIN_TLDS or any(
-        len(label) > 2 for label in labels[:-1]
+def _label_entropy(label: str) -> float:
+    if not label:
+        return 0.0
+    counts = {character: label.count(character) for character in set(label)}
+    return -sum(
+        (count / len(label)) * math.log2(count / len(label))
+        for count in counts.values()
     )
+
+
+def _has_domain_context(
+    content: str,
+    span: tuple[int, int] | None,
+    domain: str,
+) -> bool:
+    if domain.startswith("www."):
+        return True
+    if span is None:
+        return False
+    prefix = content[max(0, span[0] - 32):span[0]].lower()
+    return re.search(
+        r"(?:host\s*[:=]\s*|url\s*[:=]\s*|domain\s*[:=]\s*|@)$",
+        prefix,
+    ) is not None
+
+
+def classify_domain_confidence(
+    domain: str,
+    *,
+    source: str,
+    content: str = "",
+    span: tuple[int, int] | None = None,
+) -> ArtifactConfidence:
+    """Classify one syntactically valid domain without network access."""
+    normalized = domain.lower().rstrip(".")
+    if len(normalized) < 6 or len(normalized) > 253:
+        return "noise"
+    labels = normalized.split(".")
+    if len(labels) < 2 or any(
+        not label
+        or len(label) > 63
+        or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) is None
+        for label in labels
+    ):
+        return "noise"
+
+    registrable = labels[-2]
+    tld = labels[-1]
+    explicit_context = _has_domain_context(content, span, normalized)
+    score = 3 if tld in _COMMON_DOMAIN_TLDS else -2
+    if len(normalized) >= 6:
+        score += 1
+    if len(registrable) >= 5:
+        score += 1
+    elif len(registrable) <= 3:
+        score -= 1
+    if any(character in "aeiou" for character in registrable):
+        score += 1
+    if len(labels) >= 3:
+        score += 1
+    if registrable in _CTF_DOMAIN_LABELS:
+        score += 3
+    if explicit_context:
+        score += 3
+
+    lowered_source = source.lower()
+    if any(marker in lowered_source for marker in _BINARY_ARTIFACT_SOURCES):
+        score -= 2
+    elif any(marker in lowered_source for marker in _RELIABLE_ARTIFACT_SOURCES):
+        score += 1
+
+    if any(character.isdigit() for character in registrable):
+        score -= 1
+    if len(registrable) <= 4 and not any(
+        character in "aeiou" for character in registrable
+    ):
+        score -= 3
+    if len(registrable) >= 8 and _label_entropy(registrable) >= 3.3:
+        score -= 2
+
+    if score >= 6:
+        return "confirmed"
+    if score >= 3:
+        return "probable"
+    if score >= 1:
+        return "possible"
+    return "noise"
 
 
 def decode_base64_text(candidate: str) -> str | None:
@@ -197,6 +286,8 @@ def scan_artifacts(
     content: str,
     source: str,
     max_findings: int = MAX_ARTIFACT_FINDINGS,
+    *,
+    include_possible: bool = False,
 ) -> list[ArtifactFinding]:
     """
     Detect passive next-stage artifacts in existing textual output.
@@ -323,9 +414,16 @@ def scan_artifacts(
         if _overlaps(match.span(), occupied_urls):
             continue
         domain = match.group(0).lower()
-        if (
-            domain.rsplit(".", 1)[-1] in _COMMON_FILE_SUFFIXES
-            or not _is_plausible_domain(domain)
+        confidence = classify_domain_confidence(
+            domain,
+            source=source,
+            content=content,
+            span=match.span(),
+        )
+        if domain.rsplit(".", 1)[-1] in _COMMON_FILE_SUFFIXES:
+            continue
+        if confidence == "noise" or (
+            confidence == "possible" and not include_possible
         ):
             continue
         add("domain", domain)

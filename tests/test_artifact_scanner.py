@@ -1,11 +1,22 @@
 import unittest
+from unittest.mock import patch
 
-from dayi.scanner import scan_artifacts
+from dayi.scanner import classify_domain_confidence, scan_artifacts
 
 
 class ArtifactScannerTests(unittest.TestCase):
-    def _by_type(self, content: str) -> dict[str, list]:
-        findings = scan_artifacts(content, source="test/stdout")
+    def _by_type(
+        self,
+        content: str,
+        *,
+        source: str = "test/stdout",
+        include_possible: bool = False,
+    ) -> dict[str, list]:
+        findings = scan_artifacts(
+            content,
+            source=source,
+            include_possible=include_possible,
+        )
         grouped: dict[str, list] = {}
         for finding in findings:
             grouped.setdefault(finding.artifact_type, []).append(finding)
@@ -60,6 +71,60 @@ class ArtifactScannerTests(unittest.TestCase):
         self.assertEqual(
             [item.preview for item in grouped.get("domain", [])],
             ["go.dev", "stage.zz", "pastebin.com"],
+        )
+
+    def test_rejects_known_random_jpeg_domain_tokens(self) -> None:
+        noise = "t7s.tymb ugc9.efy iej.pk nvg.qx wcs.mx rzd.ro"
+
+        grouped = self._by_type(
+            noise,
+            source="strings/stdout",
+            include_possible=True,
+        )
+
+        self.assertNotIn("domain", grouped)
+
+    def test_source_confidence_and_verbose_possible_domains(self) -> None:
+        self.assertEqual(
+            classify_domain_confidence("abc.dev", source="target/text"),
+            "probable",
+        )
+        self.assertEqual(
+            classify_domain_confidence("abc.dev", source="strings/stdout"),
+            "possible",
+        )
+        default = self._by_type("abc.dev", source="strings/stdout")
+        verbose = self._by_type(
+            "abc.dev",
+            source="strings/stdout",
+            include_possible=True,
+        )
+
+        self.assertNotIn("domain", default)
+        self.assertEqual(
+            [item.preview for item in verbose["domain"]],
+            ["abc.dev"],
+        )
+
+    def test_real_domains_urls_and_context_are_preserved_without_network(self) -> None:
+        content = (
+            "Host: stage.example.org email=user@example.com "
+            "http://plain.example.net/a https://secure.example.com/b"
+        )
+        with patch(
+            "socket.getaddrinfo", side_effect=AssertionError("DNS used")
+        ), patch(
+            "urllib.request.urlopen", side_effect=AssertionError("network used")
+        ):
+            grouped = self._by_type(content, source="target/text")
+
+        self.assertEqual(
+            [item.preview for item in grouped["url"]],
+            ["http://plain.example.net/a", "https://secure.example.com/b"],
+        )
+        self.assertEqual(
+            [item.preview for item in grouped["domain"]],
+            ["stage.example.org", "example.com"],
         )
 
     def test_base64_requires_twenty_chars_and_printable_utf8(self) -> None:

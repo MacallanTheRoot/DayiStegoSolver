@@ -80,11 +80,7 @@ class StegseekEligibilityTests(unittest.IsolatedAsyncioTestCase):
             target = Path(tmpdir) / "target.bin"
             target.write_bytes(b"plain text\n")
 
-            with patch.object(
-                FileType,
-                "__str__",
-                return_value="runtime-dependent-enum-string",
-            ):
+            with patch.object(FileType, "__str__", return_value="unstable"):
                 result, _ = await self._run_with_mocked_command(target)
 
         self.assertEqual(
@@ -224,7 +220,7 @@ class StegseekPluginInvariantTests(unittest.TestCase):
 
         plugin_ids = [item.plugin_id for item in discover_plugins().plugins]
         position = plugin_ids.index("stegseek_main")
-        self.assertEqual(position, 16)
+        self.assertEqual(position, 19)
         self.assertEqual(plugin_ids[position - 1], "outguess_mini_bf")
         self.assertEqual(plugin_ids[position + 1], "steghide_main_bf")
 

@@ -174,6 +174,9 @@ class BruteForcePhaseControlTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_zero_exit_without_extraction_evidence_does_not_skip_main(self) -> None:
         self.assertFalse(extraction_evidence_success(_result("mini", return_code=0)))
+        flag_only = _result("mini", return_code=0)
+        flag_only.flags_found = ["FLAG{tool_output_only}"]
+        self.assertFalse(extraction_evidence_success(flag_only))
         calls = {"main": 0}
 
         async def mini(context: PluginContext) -> ToolResult:
