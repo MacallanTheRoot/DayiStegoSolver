@@ -9,19 +9,25 @@ class OCRQRDocumentationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.readme = Path("README.md").read_text(encoding="utf-8")
+        cls.semantic = " ".join(cls.readme.casefold().split())
         cls.changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
 
     def test_ocr_cli_and_limits_are_documented(self) -> None:
-        for value in ("--ocr-lang", "--ocr-exhaustive", "200 OCR"):
+        for value in (
+            "--ocr-lang", "--ocr-exhaustive", "20 source images", "20 variants",
+            "30 invocations per image", "200 OCR invocations", "1 MiB", "8 MiB",
+            "64 MiB", "50 million", "--timeout 60",
+        ):
             self.assertIn(value, self.readme)
         self.assertRegex(self.readme, re.compile(r"15\s+seconds"))
-        self.assertIn("OCR remains heuristic", self.readme)
-        self.assertIn("OCR heuristic bir analizdir", self.readme)
+        self.assertIn("ocr remains heuristic", self.semantic)
+        self.assertIn("ocr heuristic bir analizdir", self.semantic)
 
     def test_qr_backends_passive_policy_and_plugin_count_are_documented(self) -> None:
-        for value in ("OpenCV", "pyzbar", "zbarimg", "22 plugins", "22 eklenti"):
+        for value in ("OpenCV", "pyzbar", "zbarimg"):
             self.assertIn(value, self.readme)
-        self.assertRegex(self.readme, re.compile(r"never opened.*executed", re.I | re.S))
+        for behavior in ("never opened", "fetched", "executed"):
+            self.assertIn(behavior, self.semantic)
         self.assertIn("qr_scanner", self.changelog)
 
     def test_documented_plugin_counts_match_the_registry(self) -> None:
@@ -32,15 +38,21 @@ class OCRQRDocumentationTests(unittest.TestCase):
 
         self.assertEqual(report.plugin_count, 22)
         self.assertEqual(concurrent_count, 12)
-        self.assertIn(
-            f"runs the {concurrent_count} `CONCURRENT`-phase plugin operations "
-            f"together within the {report.plugin_count}-plugin registered pipeline",
-            self.readme,
+        self.assertRegex(
+            self.semantic,
+            rf"\b{report.plugin_count}\s+registered plugins\b",
         )
-        self.assertIn(
-            f"toplam {report.plugin_count} kayıtlı eklentili pipeline'ın "
-            f"`CONCURRENT` aşamasındaki {concurrent_count} eklenti işlemini",
-            self.readme,
+        self.assertRegex(
+            self.semantic,
+            rf"\b{concurrent_count}\s+(?:concurrent phase operations|concurrent plugins)\b",
+        )
+        self.assertRegex(
+            self.semantic,
+            rf"\b{report.plugin_count}\s+kayıtlı plugin\b",
+        )
+        self.assertRegex(
+            self.semantic,
+            rf"\b{concurrent_count}\s+(?:concurrent aşama işlemi|concurrent plugin)\b",
         )
 
     def test_release_candidate_status_and_version_are_current(self) -> None:

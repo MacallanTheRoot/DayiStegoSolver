@@ -121,7 +121,14 @@ class PackageMetadataTests(unittest.TestCase):
         self.assertIn("# Dayı Stego Solver 4.5.1", documents[release_notes.name])
         self.assertIn(f"## [{VERSION}] - 2026-07-20", documents["CHANGELOG.md"])
         self.assertIn("v4.0.0", documents["RELEASE_CHECKLIST.md"])
-        self.assertIn(f"Version-{VERSION}", documents["README.md"])
+        self.assertRegex(
+            documents["README.md"],
+            re.compile(rf"(?i)\b(?:version\s*|v)?{re.escape(VERSION)}\b"),
+        )
+        self.assertIn(
+            f"{REPOSITORY_URL}/releases/tag/v{VERSION}",
+            documents["README.md"],
+        )
         for text in documents.values():
             self.assertIn(REPOSITORY_URL, text)
             self.assertNotIn("MacallanTheRoot/" + "testrepo", text)

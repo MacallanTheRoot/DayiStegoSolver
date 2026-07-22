@@ -163,6 +163,53 @@ stegseek · outguess · Tesseract · OpenCV/pyzbar/zbarimg
 pypdf · oletools · Scapy
 ```
 
+### Advanced local analysis
+
+The core `text_stego_scanner` works from detected text rather than filename
+extensions. It scores zero-width Unicode, letter-case binary ASCII,
+whitespace/SNOW, Bacon-style, homoglyph, acrostic/structural, ghost-text, and
+nested Hex/Base64 candidates. Findings keep their plugin and decoder-chain
+attribution. Analysis runs without network access; decoded content is data and
+is never executed. ANSI/bidi/control characters are escaped before display.
+
+Text analysis accepts at most **8 MiB** of source data, examines at most **4
+million** decoded characters, retains at most **512 candidates**, limits each
+candidate output to **64 KiB**, follows nested decoding to **depth 3**, and caps
+aggregate decoded data at **16 MiB**.
+
+Document analysis covers PDF, OpenXML/Office packages (DOCX/DOCM, XLSX/XLSM,
+PPTX/PPTM), OLE/legacy documents when the optional parser supports them,
+OpenDocument (ODT/ODS/ODP), RTF, and plain text routed to the appropriate local
+analyzer. The `document_stego_scanner` inspects hidden styles, comments,
+revisions, headers/footers, alt text, metadata, relationships, media, and
+embedded objects. External relationships are reported only; macros, formulas,
+fields, scripts, and embedded executables are never run or fetched.
+
+OpenXML processing caps packages at **128 MiB**, members at **5,000**, each
+member at **32 MiB**, aggregate uncompressed data at **256 MiB**, and each XML
+member at **16 MiB**. Extraction caps media at **100**, embedded objects at
+**50**, and recursive document traversal at **depth 3**. Results retain package
+member and mechanism attribution. These analyzers are heuristic and
+format/corpus dependent; they do not claim complete rendering or legacy-format
+compatibility.
+
+### OCR and QR controls
+
+Use `--ocr-lang` to select installed Tesseract languages and
+`--ocr-exhaustive` for the slower bounded preprocessing schedule. OCR remains
+heuristic: stylized, damaged, or low-contrast text may not decode. The schedule
+accepts at most 20 source images, 20 variants and 30 invocations per image, and
+**200 OCR invocations** overall. Each invocation is limited to **15 seconds**
+and 1 MiB of text; aggregate OCR text is capped at 8 MiB. A source image is
+limited to 64 MiB and 50 million decoded pixels. Large exhaustive inputs may
+need a plugin timeout of 60 seconds or more, for example `--timeout 60`.
+
+The passive `qr_scanner` uses OpenCV, pyzbar, and zbarimg backends when
+available. Decoded QR URLs, commands, archives, and embedded data are reported
+or analyzed within existing limits but are never opened, fetched, or executed.
+The registered pipeline remains **22 registered plugins**, including **12
+concurrent plugins**.
+
 ---
 
 ## Example workflow
@@ -208,6 +255,56 @@ Dayı writes a built-in Markdown report. It can optionally:
 - submit discovered flags to a configured CTFd instance;
 - send independent Discord notifications.
 
+Configuration is selected independently for each field: an explicit CLI value
+wins over a nonblank environment value, followed by the default or disabled
+state.
+
+| Purpose | CLI option | Environment variable |
+|---|---|---|
+| CTFd base URL | `--ctfd-url` | `DAYI_CTFD_URL` |
+| CTFd API token | `--ctfd-token` | `DAYI_CTFD_TOKEN` |
+| CTFd challenge ID | `--challenge-id` | `DAYI_CTFD_CHALLENGE_ID` |
+| Discord webhook | `--webhook` | `DAYI_DISCORD_WEBHOOK_URL` |
+| Notification challenge name | `--challenge-name` | `DAYI_CHALLENGE_NAME` |
+| Optional writeup checkout | `--ctfshit-path` | `DAYI_CTFSHIT_PATH` |
+
+Prefer environment variables for secrets. Real tokens and webhook URLs must not
+be placed in process listings, shell history, terminal logs, screenshots, or
+committed files. The following values are deliberately non-secret placeholders:
+
+```bash
+export DAYI_CTFD_URL=https://ctfd.example
+export DAYI_CTFD_TOKEN=TOKEN_REDACTED
+export DAYI_CTFD_CHALLENGE_ID=42
+export DAYI_DISCORD_WEBHOOK_URL=https://discord.example/webhook
+export DAYI_CHALLENGE_NAME="Example challenge"
+dayi scan challenge.jpg
+
+# A CLI value overrides only its corresponding environment field.
+dayi scan challenge.jpg --challenge-id 43
+
+# Optional rich writeup checkout; built-in Markdown remains the fallback.
+export DAYI_CTFSHIT_PATH=/path/to/local/ctfshitcli
+dayi scan challenge.jpg --writeup writeup.md
+
+# Network-free diagnostics
+dayi doctor
+dayi doctor --json
+```
+
+At manager creation Dayı selects usable aiohttp, otherwise stdlib urllib; that
+transport selection is fixed for the scan. CTFd and Discord are dispatched
+independently, and an integration failure never invalidates a completed scan.
+`csl-ctfshitcli` is used only for rich Markdown writeups; Discord and CTFd do
+not depend on it, and built-in Markdown is the writeup fallback.
+
+Discord webhook URLs require HTTPS. CTFd HTTP remains accepted for backward
+compatibility, although HTTPS is recommended. URL userinfo, query strings, and
+fragments are rejected, redirects are blocked, requests use bounded timeouts,
+and CTFd response reads are bounded. `dayi doctor` validates local configuration
+only; it does not test endpoints, credentials, or reachability. Notification
+secrets are not added to TXT, JSON, or Markdown reports.
+
 ---
 
 ## Release status
@@ -238,6 +335,32 @@ Release checksums are included with the GitHub Release assets.
 Issues and focused pull requests are welcome. Useful contributions include reproducible public challenge samples, false-positive or missed-detection reports, new bounded analyzers, portability fixes, installation documentation, and benchmark results.
 
 Do not submit private challenge data, credentials, or copyrighted corpora without redistribution permission.
+
+### Local private regression
+
+Private corpora, manifests, and reports must stay outside this repository.
+Never commit challenge samples or exact flags, and redact filenames, paths,
+payloads, and flag values from public reports. Real private regressions remain
+read-only and local; deterministic synthetic fixtures are required for code
+changes committed to the repository.
+
+The local harness is explicitly bounded, uses no network access, and keeps
+networking configuration disabled:
+
+```bash
+export DAYI_PRIVATE_CORPUS=/path/outside/repository/corpus
+python scripts/run_private_regression.py \
+  --input "$DAYI_PRIVATE_CORPUS" \
+  --output /tmp/dayi-private-regression \
+  --manifest /path/outside/repository/expectations.json \
+  --timeout 180 --max-files 500 --anonymize --redact-flags
+```
+
+Use `--show-flags` only for an explicitly local report. The harness classifies
+timeouts, parser failures, unsupported inputs, and missing tools separately;
+its exit status reports harness/configuration failure rather than how many
+challenges were solved. It does not execute decoded payloads. Synthetic tests
+are required for fixes; private challenge data must never become a fixture.
 
 ---
 
@@ -384,6 +507,52 @@ stegseek · outguess · Tesseract · OpenCV/pyzbar/zbarimg
 pypdf · oletools · Scapy
 ```
 
+### Gelişmiş yerel analiz
+
+Çekirdek `text_stego_scanner`, dosya uzantısı yerine algılanan metin üzerinde
+çalışır. Zero-width Unicode, harf büyüklüğüne dayalı binary ASCII,
+whitespace/SNOW, Bacon-style, homoglyph, akrostiş/yapısal, ghost-text ve iç içe
+Hex/Base64 adaylarını puanlar. Bulgular plugin ve decoder-chain attribution
+bilgisini korur. Analiz ağ erişimi olmadan çalışır; çözülen içerik veri olarak
+kalır ve çalıştırılmaz. ANSI/bidi/control karakterleri gösterimden önce escape
+edilir.
+
+Metin analizi en fazla **8 MiB** kaynak, **4 milyon** decoded karakter ve **512
+aday** işler; aday çıktısını **64 KiB**, iç içe çözmeyi **depth 3** ve toplam
+decoded veriyi **16 MiB** ile sınırlar.
+
+Belge analizi PDF, OpenXML/Office paketleri (DOCX/DOCM, XLSX/XLSM, PPTX/PPTM),
+optional parser desteklediğinde OLE/eski belgeler, OpenDocument (ODT/ODS/ODP),
+RTF ve uygun yerel analizöre yönlendirilen düz metni kapsar.
+`document_stego_scanner`; gizli stiller, yorumlar, revizyonlar, header/footer,
+alt text, metadata, ilişkiler, medya ve gömülü nesneleri inceler. Harici
+ilişkiler yalnızca raporlanır; makrolar, formüller, field'lar, scriptler ve
+gömülü executable'lar çalıştırılmaz veya fetch edilmez.
+
+OpenXML işlemleri paketleri **128 MiB**, üyeleri **5.000**, her üyeyi **32 MiB**,
+toplam açılmış veriyi **256 MiB** ve her XML üyesini **16 MiB** ile sınırlar.
+Extraction sırasında medya sayısı **100**, gömülü nesne sayısı **50** ve recursive
+belge geçişi **depth 3** ile sınırlıdır. Bulgular paket üyesi ve mekanizma
+attribution bilgisini korur. Bu analizler heuristic ve format/corpus bağımlıdır;
+eksiksiz render veya eski-format uyumluluğu iddia etmez.
+
+### OCR ve QR kontrolleri
+
+Kurulu Tesseract dillerini `--ocr-lang` ile seçin; daha yavaş fakat sınırlı
+preprocessing planını `--ocr-exhaustive` ile açın. OCR heuristic bir analizdir;
+stilize, hasarlı veya düşük kontrastlı metin çözülemeyebilir. Plan en fazla 20
+kaynak görsel, görsel başına 20 variant ve 30 invocation, toplamda **200 OCR
+invocation** çalıştırır. Her invocation **15 saniye** ve 1 MiB metinle, toplam
+OCR metni 8 MiB ile sınırlıdır. Kaynak görsel sınırı 64 MiB ve 50 milyon decoded
+pikseldir. Büyük exhaustive girdiler için `--timeout 60` gibi 60 saniye veya
+daha uzun plugin timeout gerekebilir.
+
+Pasif `qr_scanner`, hazır olduğunda OpenCV, pyzbar ve zbarimg backend'lerini
+kullanır. QR'dan çözülen URL, komut, arşiv ve gömülü veriler mevcut sınırlar
+içinde raporlanır veya incelenir; asla açılmaz, fetch edilmez veya çalıştırılmaz.
+Kayıtlı pipeline **22 kayıtlı plugin** ve bunların **12 concurrent plugin**
+işlemini korur.
+
 ---
 
 ## Örnek çalışma akışı
@@ -429,6 +598,37 @@ Dayı yerleşik Markdown raporu üretir. İsteğe bağlı olarak:
 - bulunan flag'leri yapılandırılmış CTFd sunucusuna gönderebilir;
 - bağımsız Discord bildirimi gönderebilir.
 
+Yapılandırma her alan için ayrı seçilir: açık CLI değeri boş olmayan ortam
+değişkeninden, ortam değeri de varsayılan veya devre dışı durumdan önceliklidir.
+
+| Amaç | CLI seçeneği | Ortam değişkeni |
+|---|---|---|
+| CTFd temel URL | `--ctfd-url` | `DAYI_CTFD_URL` |
+| CTFd API token | `--ctfd-token` | `DAYI_CTFD_TOKEN` |
+| CTFd challenge ID | `--challenge-id` | `DAYI_CTFD_CHALLENGE_ID` |
+| Discord webhook | `--webhook` | `DAYI_DISCORD_WEBHOOK_URL` |
+| Bildirim challenge adı | `--challenge-name` | `DAYI_CHALLENGE_NAME` |
+| Optional writeup checkout | `--ctfshit-path` | `DAYI_CTFSHIT_PATH` |
+
+Secret değerler için ortam değişkenlerini tercih edin. Gerçek token ve webhook
+URL'lerini process listesi, shell history, terminal logu, ekran görüntüsü veya
+commit edilmiş dosyalara koymayın. Yukarıdaki İngilizce örneklerdeki
+`https://ctfd.example`, `https://discord.example/webhook` ve `TOKEN_REDACTED`
+değerleri yalnızca güvenli placeholder'dır.
+
+Manager oluşturulurken kullanılabilir aiohttp seçilir, yoksa stdlib urllib
+kullanılır; transport seçimi tarama boyunca sabittir. CTFd ve Discord bağımsız
+gönderilir ve entegrasyon hatası tamamlanmış taramayı geçersiz kılmaz.
+`csl-ctfshitcli` yalnız zengin Markdown writeup için kullanılır; Discord ve CTFd
+ona bağlı değildir ve yerleşik Markdown fallback olarak kalır.
+
+Discord webhook URL'leri HTTPS gerektirir. CTFd HTTP geriye uyumluluk için kabul
+edilir, fakat HTTPS önerilir. URL userinfo, query string ve fragment alanları
+reddedilir; redirect engellenir, istek timeout'ları ve CTFd cevap okumaları
+sınırlıdır. `dayi doctor` yalnızca yerel yapılandırmayı doğrular; endpoint,
+credential veya erişilebilirlik testi yapmaz. Bildirim secret'ları TXT, JSON
+veya Markdown raporlarına eklenmez.
+
 ---
 
 ## Sürüm durumu
@@ -459,6 +659,22 @@ Release checksum dosyaları GitHub Release asset'leri içinde bulunur.
 Issue ve odaklı pull request'ler kabul edilir. Özellikle tekrar üretilebilir kamuya açık challenge örnekleri, false-positive veya missed-detection raporları, yeni bounded analyzer'lar, portability düzeltmeleri, kurulum dokümanı ve benchmark sonuçları değerlidir.
 
 Dağıtım izni olmayan özel challenge verisi, credential veya copyrighted corpus eklemeyin.
+
+### Yerel özel regresyon
+
+Özel corpus, manifest ve raporlar bu repository'nin dışında kalmalıdır.
+Challenge örneklerini veya tam flag değerlerini commit etmeyin; public
+raporlarda dosya adı, yol, payload ve flag değerlerini redact edin. Gerçek özel
+regresyonlar read-only ve yerel kalır; repository'ye yalnız deterministik
+sentetik fixture ve testler eklenir.
+
+Yerel harness ağ erişimini kapatır ve sınırları korur. İngilizce bölümdeki
+`DAYI_PRIVATE_CORPUS`, `--timeout 180 --max-files 500`, `--anonymize`,
+`--redact-flags` ve yerel kullanım için `--show-flags` seçenekleri geçerlidir.
+Harness timeout, parser hatası, unsupported girdi ve eksik araçları ayrı
+sınıflandırır. Çıkış durumu çözülen challenge sayısını değil harness veya
+yapılandırma hatasını bildirir. Decoded payload çalıştırılmaz. Düzeltmeler
+sentetik testlerle doğrulanmalı; özel challenge verisi fixture olmamalıdır.
 
 ---
 
