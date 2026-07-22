@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 from dayi.reporter import ToolResult
-from dayi.scanner import scan_directory
+from dayi.scanner import SubprocessFlagScanner, scan_directory
 from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
@@ -161,22 +161,25 @@ async def run_binwalk(
         ]
 
         logger.info(TOOL_INTROS[TOOL_NAME])
+        stream_scanner = SubprocessFlagScanner(flag_pattern)
         rc, stdout, stderr, elapsed, timed_out = await async_run_command(
-            cmd, TOOL_NAME, timeout, cwd=tmpdir
+            cmd,
+            TOOL_NAME,
+            timeout,
+            cwd=tmpdir,
+            stdout_observer=stream_scanner.stdout,
+            stderr_observer=stream_scanner.stderr,
         )
 
-        flags_from_output: list[str] = []
+        stream_flags = stream_scanner.findings(stdout, stderr)
+        flags_from_output = list(dict.fromkeys(
+            flag for hits in stream_flags.values() for flag in hits
+        ))
         extracted_flags:   dict[str, list[str]] = {}
         extracted_dir_str: str | None = None
 
         if not timed_out:
             logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
-
-            # Fix: use finditer+group(0) to correctly handle capture-group patterns
-            flags_from_output = list(dict.fromkeys(
-                [m.group(0) for m in flag_pattern.finditer(stdout)] +
-                [m.group(0) for m in flag_pattern.finditer(stderr)]
-            ))
 
             extract_dir = await asyncio.to_thread(
                 _find_extraction_directory, tmpdir, target_copy.name
@@ -205,6 +208,7 @@ async def run_binwalk(
                     flags_found=flags_from_output,
                     elapsed_seconds=elapsed,
                     extracted_dir=None,
+                    stream_flags=stream_flags,
                     error=True,
                 )
 
@@ -239,6 +243,7 @@ async def run_binwalk(
             timed_out=timed_out,
             extracted_dir=extracted_dir_str,
             extracted_flags=extracted_flags,
+            stream_flags=stream_flags,
         )
 
     finally:

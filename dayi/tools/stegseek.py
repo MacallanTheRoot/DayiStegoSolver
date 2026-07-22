@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from dayi.reporter import ToolResult
-from dayi.scanner import scan_file, scan_text
+from dayi.scanner import SubprocessFlagScanner, scan_file
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -98,18 +98,24 @@ async def run_stegseek(
             cmd = [BINARY, "--crack", str(target), "/dev/null", str(out_path), "--quiet"]
 
         logger.info(TOOL_INTROS[TOOL_NAME])
+        stream_scanner = SubprocessFlagScanner(flag_pattern)
         rc, stdout, stderr, elapsed, timed_out = await async_run_command(
-            cmd, TOOL_NAME, timeout
+            cmd,
+            TOOL_NAME,
+            timeout,
+            stdout_observer=stream_scanner.stdout,
+            stderr_observer=stream_scanner.stderr,
         )
 
-        flags: list[str] = []
+        stream_flags = stream_scanner.findings(stdout, stderr)
+        flags = list(dict.fromkeys(
+            flag for hits in stream_flags.values() for flag in hits
+        ))
         extracted_flags: dict[str, list[str]] = {}
         extraction_succeeded = False
 
         if not timed_out:
             logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
-            flags = list(dict.fromkeys(scan_text(stdout, flag_pattern) + scan_text(stderr, flag_pattern)))
-
             # Scan extracted output file if it was created
             if out_path.is_file() and out_path.stat().st_size > 0:
                 extraction_succeeded = True
@@ -130,6 +136,7 @@ async def run_stegseek(
             timed_out=timed_out,
             extraction_succeeded=extraction_succeeded,
             extracted_flags=extracted_flags,
+            stream_flags=stream_flags,
         )
 
 

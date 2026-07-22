@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from dayi.reporter import ToolResult
-from dayi.scanner import scan_file
+from dayi.scanner import SubprocessFlagScanner, scan_file
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -97,20 +97,24 @@ async def run_steghide(
         )
 
     logger.info(TOOL_INTROS[TOOL_NAME])
+    stream_scanner = SubprocessFlagScanner(flag_pattern)
     rc, stdout, stderr, elapsed, timed_out = await async_run_command(
-        cmd, TOOL_NAME, timeout, stdin_data=b"\n"
+        cmd,
+        TOOL_NAME,
+        timeout,
+        stdin_data=b"\n",
+        stdout_observer=stream_scanner.stdout,
+        stderr_observer=stream_scanner.stderr,
     )
 
-    flags: list[str] = []
+    stream_flags = stream_scanner.findings(stdout, stderr)
+    flags = list(dict.fromkeys(
+        flag for hits in stream_flags.values() for flag in hits
+    ))
     extracted_flags: dict[str, list[str]] = {}
 
     if not timed_out:
         logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
-        flags = list(dict.fromkeys(
-            [m.group(0) for m in flag_pattern.finditer(stdout)] +
-            [m.group(0) for m in flag_pattern.finditer(stderr)]
-        ))
-
         # Attempt actual extraction with empty passphrase
         with tempfile.TemporaryDirectory(prefix="dayi_steghide_") as tmpdir:
             out_path = Path(tmpdir) / "steghide_extracted.bin"
@@ -138,6 +142,7 @@ async def run_steghide(
         elapsed_seconds=elapsed,
         timed_out=timed_out,
         extracted_flags=extracted_flags,
+        stream_flags=stream_flags,
     )
 
 

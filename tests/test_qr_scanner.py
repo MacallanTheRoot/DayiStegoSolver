@@ -12,11 +12,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dayi.image_analysis import ImageSource
+from dayi.tools._opencv import configure_opencv_runtime
 from dayi.tools._plugin import PluginPhase, discover_plugins
 from dayi.tools.qr_scanner import (
     PLUGIN_SPECS,
     QRBackend,
     _DecodedSymbol,
+    _decode_native_worker,
     _decode_zbar,
     classify_qr_payload,
     run_qr_scanner,
@@ -50,6 +52,37 @@ class QRClassificationTests(unittest.TestCase):
                 side_effect=ImportError,
             ):
                 self.assertIsNone(select_qr_backend())
+
+    def test_opencv_runtime_configuration_is_idempotent_and_bounded(self) -> None:
+        state = {"threads": None, "opencl": True}
+        cv2 = SimpleNamespace(
+            setNumThreads=lambda value: state.__setitem__("threads", value),
+            ocl=SimpleNamespace(
+                setUseOpenCL=lambda value: state.__setitem__("opencl", value)
+            ),
+        )
+        self.assertIs(configure_opencv_runtime(cv2), cv2)
+        self.assertIs(configure_opencv_runtime(cv2), cv2)
+        self.assertEqual(state, {"threads": 1, "opencl": False})
+
+    def test_opencv_runtime_configuration_tolerates_optional_capabilities(self) -> None:
+        cv2_without_capabilities = SimpleNamespace()
+        self.assertIs(
+            configure_opencv_runtime(cv2_without_capabilities),
+            cv2_without_capabilities,
+        )
+
+        def unavailable(*_args) -> None:
+            raise RuntimeError("unsupported by this OpenCV build")
+
+        cv2_with_failing_capabilities = SimpleNamespace(
+            setNumThreads=unavailable,
+            ocl=SimpleNamespace(setUseOpenCL=unavailable),
+        )
+        self.assertIs(
+            configure_opencv_runtime(cv2_with_failing_capabilities),
+            cv2_with_failing_capabilities,
+        )
 
 
 class QRScannerTests(unittest.TestCase):
@@ -95,6 +128,38 @@ class QRScannerTests(unittest.TestCase):
         ids = [item.plugin_id for item in registry.plugins]
         self.assertLess(ids.index("document_stego_scanner"), ids.index("qr_scanner"))
         self.assertLess(ids.index("qr_scanner"), ids.index("ocr_scanner"))
+
+    def test_opencv_is_configured_before_native_qr_processing(self) -> None:
+        events: list[tuple[str, object]] = []
+        cv2 = SimpleNamespace(
+            IMREAD_UNCHANGED=-1,
+            setNumThreads=lambda value: events.append(("threads", value)),
+            ocl=SimpleNamespace(
+                setUseOpenCL=lambda value: events.append(("opencl", value))
+            ),
+            imread=lambda *_args: events.append(("imread", None)) or object(),
+        )
+        with (
+            patch("dayi.tools.qr_scanner.inspect_image_dimensions"),
+            patch(
+                "dayi.tools.qr_scanner._decode_opencv_image",
+                side_effect=lambda *_args: events.append(("decode", None)) or [],
+            ),
+            patch("dayi.tools._opencv.importlib.import_module", return_value=cv2),
+        ):
+            self.assertEqual(
+                _decode_native_worker("synthetic.png", "opencv", False),
+                [],
+            )
+        self.assertEqual(
+            events,
+            [
+                ("threads", 1),
+                ("opencl", False),
+                ("imread", None),
+                ("decode", None),
+            ],
+        )
 
     def test_flag_base64_and_duplicate_payloads_are_deduplicated(self) -> None:
         encoded = base64.b64encode(b"SiberVatan{qr_nested}")

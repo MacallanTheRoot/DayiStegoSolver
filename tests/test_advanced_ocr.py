@@ -15,7 +15,15 @@ from dayi.image_analysis import (
     discover_images,
 )
 from dayi.reporter import ScanReport, ToolResult, write_json_report
-from dayi.tools.ocr_scanner import OCRDependencies, run_ocr_scanner
+from dayi.scanner import get_builtin_flag_pattern
+from dayi.text_stego import MAX_DIRECT_FLAG_LENGTH
+from dayi.tools.ocr_scanner import (
+    OCRDependencies,
+    _literal_flag_prefixes,
+    _process_image_worker,
+    _repair_flag_candidates,
+    run_ocr_scanner,
+)
 
 
 class _Image:
@@ -187,6 +195,110 @@ class AdvancedOCRTests(unittest.TestCase):
         self.assertIn("SiberVatan{ocr_repair}", result.flags_found)
         finding = next(item for item in result.ocr_findings if item.flags_found)
         self.assertEqual(finding.decoder_chain, ("ocr-repair",))
+
+    def test_semantically_equivalent_patterns_enable_identical_repair(self) -> None:
+        approximation = "siberV atan{ben!. nasil _gordun}"
+        patterns = (
+            r"SiberVatan\{.*?\}",
+            r"SiberVatan[{].*?[}]",
+            (
+                r"SiberVatan\{(?:sanirim_aradigin_seyi_buldun|"
+                r"beni_nasil_gordun)\}"
+            ),
+        )
+        for expression in patterns:
+            with self.subTest(expression=expression):
+                pattern = re.compile(expression)
+                self.assertEqual(
+                    _literal_flag_prefixes(pattern),
+                    ("SiberVatan",),
+                )
+                self.assertEqual(
+                    _repair_flag_candidates(approximation, pattern),
+                    ("SiberVatan{beni_nasil_gordun}",),
+                )
+
+    def test_repair_supports_default_pattern_without_broadening(self) -> None:
+        pattern = get_builtin_flag_pattern()
+        self.assertEqual(
+            _repair_flag_candidates("ctf[default_flag]", pattern),
+            ("CTF{default_flag}",),
+        )
+        self.assertEqual(
+            _repair_flag_candidates(
+                "siberVatan{beni_nasil_gordun}",
+                re.compile(r"[A-Z]+\{.*?\}"),
+            ),
+            (),
+        )
+        self.assertEqual(
+            _repair_flag_candidates(
+                "WrongPrefix{ben!. nasil _gordun}",
+                re.compile(r"SiberVatan[{].*?[}]"),
+            ),
+            (),
+        )
+        self.assertEqual(
+            _repair_flag_candidates(
+                "siberV atan{ben!. nasil _gordun",
+                re.compile(r"SiberVatan\{.*?\}"),
+            ),
+            (),
+        )
+        self.assertEqual(
+            _repair_flag_candidates(
+                "SiberVatan{" + "x" * MAX_DIRECT_FLAG_LENGTH + "}",
+                re.compile(r"SiberVatan\{.*?\}"),
+            ),
+            (),
+        )
+        self.assertEqual(
+            _repair_flag_candidates(
+                "ordinary non-flag OCR text",
+                re.compile(r"SiberVatan\{.*?\}"),
+            ),
+            (),
+        )
+
+    def test_character_class_pattern_repairs_through_ocr_pipeline(self) -> None:
+        result, _engine = self._run(
+            "siberV atan{ben!. nasil _gordun}",
+            pattern=r"SiberVatan[{].*?[}]",
+        )
+        self.assertEqual(result.flags_found, ["SiberVatan{beni_nasil_gordun}"])
+        finding = next(item for item in result.ocr_findings if item.flags_found)
+        self.assertEqual(finding.decoder_chain, ("ocr-repair",))
+
+    def test_opencv_is_configured_before_ocr_dependencies_and_processing(self) -> None:
+        events: list[str] = []
+        dependencies = OCRDependencies(_Images, _StructuredTesseract("text"))
+        with (
+            patch(
+                "dayi.tools.ocr_scanner.configure_opencv_runtime",
+                side_effect=lambda: events.append("opencv"),
+            ),
+            patch(
+                "dayi.tools.ocr_scanner._load_ocr_dependencies",
+                side_effect=lambda: events.append("dependencies") or dependencies,
+            ),
+            patch(
+                "dayi.tools.ocr_scanner._process_image_sync",
+                side_effect=lambda *_args: events.append("process") or ([], 0, 0, False),
+            ),
+        ):
+            result = _process_image_worker(
+                "synthetic.png",
+                "target:synthetic.png",
+                "eng",
+                False,
+                1.0,
+                r"SiberVatan\{.*?\}",
+                0,
+                1,
+                1024,
+            )
+        self.assertEqual(result, ([], 0, 0, False))
+        self.assertEqual(events, ["opencv", "dependencies", "process"])
 
     def test_controls_are_escaped_and_language_is_validated(self) -> None:
         result, _engine = self._run("hint\x1b[31m\u202e")

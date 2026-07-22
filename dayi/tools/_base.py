@@ -35,7 +35,7 @@ import sys
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional, TypeVar
+from typing import Any, Callable, Iterator, Optional, Protocol, TypeVar
 
 from dayi.reporter import ToolResult
 
@@ -59,6 +59,16 @@ _ISOLATED_RESPONSE_BYTES = 64 * 1024 * 1024
 _ISOLATED_POLL_SECONDS = 0.01
 _ISOLATED_KILL_GRACE_SECONDS = 0.25
 _T = TypeVar("_T")
+
+
+class StreamObserver(Protocol):
+    """Policy-neutral callback contract for incrementally drained bytes."""
+
+    def feed(self, chunk: bytes) -> None:
+        """Observe one non-empty stream chunk."""
+
+    def finish(self) -> None:
+        """Flush any bounded decoder state after end-of-stream."""
 
 
 def _isolated_worker_entry(
@@ -429,21 +439,40 @@ async def _kill_process_robustly(
 async def _read_stream_bounded(
     stream: asyncio.StreamReader | None,
     retained_limit: int,
+    observer: StreamObserver | None = None,
 ) -> tuple[bytes, bool]:
     """Drain one subprocess stream while retaining only a bounded prefix."""
     if stream is None:
         return b"", False
     retained = bytearray()
     truncated = False
-    while True:
-        chunk = await stream.read(PIPE_BUFFER_LIMIT)
-        if not chunk:
-            break
-        remaining = retained_limit - len(retained)
-        if remaining > 0:
-            retained.extend(chunk[:remaining])
-        if len(chunk) > max(remaining, 0):
-            truncated = True
+    active_observer = observer
+    try:
+        while True:
+            chunk = await stream.read(PIPE_BUFFER_LIMIT)
+            if not chunk:
+                break
+            if active_observer is not None:
+                try:
+                    active_observer.feed(chunk)
+                except Exception as exc:
+                    logger.debug(
+                        f"[subprocess] Akış gözlemcisi devre dışı bırakıldı: {exc}"
+                    )
+                    active_observer = None
+            remaining = retained_limit - len(retained)
+            if remaining > 0:
+                retained.extend(chunk[:remaining])
+            if len(chunk) > max(remaining, 0):
+                truncated = True
+    finally:
+        if active_observer is not None:
+            try:
+                active_observer.finish()
+            except Exception as exc:
+                logger.debug(
+                    f"[subprocess] Akış gözlemcisi tamamlanamadı: {exc}"
+                )
     return bytes(retained), truncated
 
 
@@ -477,6 +506,8 @@ async def async_run_command_bytes(
     *,
     stdout_limit: int | None = None,
     stderr_limit: int | None = None,
+    stdout_observer: StreamObserver | None = None,
+    stderr_observer: StreamObserver | None = None,
 ) -> tuple[int | None, bytes, bytes, float, bool, bool, bool]:
     """
     Execute a subprocess while preserving bounded stdout and stderr bytes.
@@ -523,10 +554,14 @@ async def async_run_command_bytes(
         )
 
         stdout_task = asyncio.create_task(
-            _read_stream_bounded(proc.stdout, max(0, stdout_limit))
+            _read_stream_bounded(
+                proc.stdout, max(0, stdout_limit), stdout_observer
+            )
         )
         stderr_task = asyncio.create_task(
-            _read_stream_bounded(proc.stderr, max(0, stderr_limit))
+            _read_stream_bounded(
+                proc.stderr, max(0, stderr_limit), stderr_observer
+            )
         )
         stdin_task = asyncio.create_task(_write_stdin(proc.stdin, stdin_data))
 
@@ -574,6 +609,9 @@ async def async_run_command(
     timeout: float = 60.0,
     cwd: Optional[Path] = None,
     stdin_data: Optional[bytes] = None,
+    *,
+    stdout_observer: StreamObserver | None = None,
+    stderr_observer: StreamObserver | None = None,
 ) -> tuple[int | None, str, str, float, bool]:
     """Run a subprocess and decode its bounded diagnostic text as UTF-8."""
     (
@@ -590,6 +628,8 @@ async def async_run_command(
         timeout=timeout,
         cwd=cwd,
         stdin_data=stdin_data,
+        stdout_observer=stdout_observer,
+        stderr_observer=stderr_observer,
     )
     stdout = raw_stdout.decode("utf-8", errors="replace")
     stderr = raw_stderr.decode("utf-8", errors="replace")

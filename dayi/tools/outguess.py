@@ -32,6 +32,7 @@ from dayi.extraction import (
     validate_extracted_payload,
 )
 from dayi.reporter import ToolResult
+from dayi.scanner import SubprocessFlagScanner
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -100,20 +101,23 @@ async def run_outguess(
         cmd = [BINARY, "-r", str(target), str(out_path)]
 
         logger.info(TOOL_INTROS[TOOL_NAME])
+        stream_scanner = SubprocessFlagScanner(flag_pattern)
         rc, stdout, stderr, elapsed, timed_out = await async_run_command(
-            cmd, TOOL_NAME, timeout
+            cmd,
+            TOOL_NAME,
+            timeout,
+            stdout_observer=stream_scanner.stdout,
+            stderr_observer=stream_scanner.stderr,
         )
 
-        flags: list[str] = []
+        stream_flags = stream_scanner.findings(stdout, stderr)
+        flags = list(dict.fromkeys(
+            flag for hits in stream_flags.values() for flag in hits
+        ))
         extracted_flags: dict[str, list[str]] = {}
         extraction_succeeded = False
 
         if not timed_out:
-            flags = list(dict.fromkeys(
-                [m.group(0) for m in flag_pattern.finditer(stdout)] +
-                [m.group(0) for m in flag_pattern.finditer(stderr)]
-            ))
-
             evidence = await asyncio.to_thread(
                 validate_extracted_payload,
                 out_path,
@@ -150,6 +154,7 @@ async def run_outguess(
             elapsed_seconds=elapsed,
             timed_out=timed_out,
             extracted_flags=extracted_flags,
+            stream_flags=stream_flags,
             extraction_succeeded=extraction_succeeded,
         )
 

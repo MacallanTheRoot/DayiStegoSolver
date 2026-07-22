@@ -7,7 +7,6 @@ import binascii
 import hashlib
 import importlib
 import json
-import os
 import re
 import shutil
 import time
@@ -41,6 +40,7 @@ from dayi.tools._base import (
     async_run_isolated,
     make_skipped_result,
 )
+from dayi.tools._opencv import configure_opencv_runtime
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
 
@@ -415,10 +415,9 @@ def _decode_native_worker(
     image_path = Path(path)
     inspect_image_dimensions(image_path)
     if backend_name == "opencv":
-        os.environ["OPENBLAS_NUM_THREADS"] = "1"
-        os.environ["OMP_NUM_THREADS"] = "1"
-        os.environ["MKL_NUM_THREADS"] = "1"
-        cv2 = importlib.import_module("cv2")
+        cv2 = configure_opencv_runtime()
+        if cv2 is None:
+            raise ImportError("OpenCV became unavailable")
         image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
         if image is None:
             return []

@@ -389,7 +389,9 @@ class StegseekOutputPreservationTests(unittest.IsolatedAsyncioTestCase):
             target = Path(tmpdir) / "carrier.jpg"
             target.write_bytes(b"\xff\xd8\xff" + b"\x00" * 13)
 
-            async def extract(cmd, tool_name, timeout):
+            async def extract(cmd, tool_name, timeout, **kwargs):
+                self.assertIn("stdout_observer", kwargs)
+                self.assertIn("stderr_observer", kwargs)
                 Path(cmd[4]).write_text("FLAG{embedded_kept}", encoding="utf-8")
                 return 0, "", "", 0.01, False
 

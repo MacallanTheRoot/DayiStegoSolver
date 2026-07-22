@@ -31,9 +31,19 @@ from dayi.image_analysis import (
 from dayi.persona import log_artifact
 from dayi.reporter import ToolResult
 from dayi.scanner import ArtifactFinding, scan_artifacts, scan_text
-from dayi.text_stego import analyze_text_input, detect_text_bytes
+from dayi.text_stego import (
+    MAX_DIRECT_FLAG_LENGTH,
+    analyze_text_input,
+    detect_text_bytes,
+)
 from dayi.tools._base import async_run_command, async_run_isolated, make_skipped_result
+from dayi.tools._opencv import configure_opencv_runtime
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
+
+try:
+    from re import _parser as _regex_parser
+except ImportError:  # pragma: no cover - Python 3.10 compatibility
+    import sre_parse as _regex_parser
 
 
 TOOL_NAME = "ocr_scanner"
@@ -490,9 +500,91 @@ def _confidence(text: str, flags: tuple[str, ...], mean: float | None, repeats: 
     return "low"
 
 
+def _literal_flag_prefixes(pattern: re.Pattern) -> tuple[str, ...]:
+    """Derive bounded literal prefixes from regex semantics up to ``{``."""
+    max_prefixes = 16
+    max_prefix_length = 64
+    max_depth = 16
+
+    def walk(sequence, prefixes: tuple[str, ...], depth: int):
+        if depth > max_depth:
+            return (), False
+        current = prefixes
+        for operation, argument in sequence:
+            if operation in {
+                _regex_parser.AT,
+                _regex_parser.ASSERT,
+                _regex_parser.ASSERT_NOT,
+            }:
+                continue
+            if operation is _regex_parser.LITERAL:
+                character = chr(argument)
+                if character == "{":
+                    return current, True
+                if not re.fullmatch(r"[A-Za-z0-9_-]", character):
+                    return (), False
+                current = tuple(
+                    prefix + character for prefix in current
+                    if len(prefix) < max_prefix_length
+                )
+                if not current:
+                    return (), False
+                continue
+            if operation is _regex_parser.SUBPATTERN:
+                current, found = walk(argument[-1], current, depth + 1)
+                if found:
+                    return current, True
+                if not current:
+                    return (), False
+                continue
+            if operation is _regex_parser.BRANCH:
+                branch_results = [
+                    walk(branch, current, depth + 1)
+                    for branch in argument[1][:max_prefixes]
+                ]
+                if not branch_results:
+                    return (), False
+                found_values = {found for _items, found in branch_results}
+                if len(found_values) != 1:
+                    return (), False
+                combined: list[str] = []
+                for items, _found in branch_results:
+                    for item in items:
+                        if item not in combined:
+                            combined.append(item)
+                        if len(combined) >= max_prefixes:
+                            break
+                    if len(combined) >= max_prefixes:
+                        break
+                current = tuple(combined)
+                found = branch_results[0][1]
+                if found:
+                    return current, True
+                if not current:
+                    return (), False
+                continue
+            return (), False
+        return current, False
+
+    try:
+        parsed = _regex_parser.parse(pattern.pattern, pattern.flags)
+        prefixes, found_brace = walk(parsed, ("",), 0)
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
+        return ()
+    if not found_brace:
+        return ()
+    return tuple(
+        prefix for prefix in prefixes
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{1,63}", prefix)
+    )[:max_prefixes]
+
+
 def _repair_flag_candidates(text: str, pattern: re.Pattern) -> tuple[str, ...]:
     """Try a tiny fixed repair set only around brace-like candidate text."""
-    if not any(character in text for character in "{}[]"):
+    if (
+        len(text) > MAX_DIRECT_FLAG_LENGTH
+        or not any(character in text for character in "{}[]")
+    ):
         return ()
     options = [text.replace("[", "{").replace("]", "}")]
     options.append(re.sub(r"\s*([{}_])\s*", r"\1", options[0]))
@@ -502,11 +594,9 @@ def _repair_flag_candidates(text: str, pattern: re.Pattern) -> tuple[str, ...]:
     options.append(compact)
 
     # Sparse-line OCR may split a fixed flag prefix and commonly reads a final
-    # lowercase i/l as '!'. Generate only a tiny, regex-gated repair set.
-    prefix_match = re.search(
-        r"([A-Za-z][A-Za-z0-9_-]{1,63})\\\{", pattern.pattern
-    )
-    prefixes = (prefix_match.group(1),) if prefix_match is not None else ()
+    # lowercase i/l as '!'. Generate only a tiny, regex-gated repair set. The
+    # prefix comes from parsed regex semantics, not a particular brace spelling.
+    prefixes = _literal_flag_prefixes(pattern)
     for replacement in ("i",):
         repaired_option = re.sub(
             r"(?<=[A-Za-z])!(?=[^A-Za-z]|$)", replacement, compact
@@ -517,14 +607,19 @@ def _repair_flag_candidates(text: str, pattern: re.Pattern) -> tuple[str, ...]:
             repaired_option,
         )
         for prefix in prefixes:
-            repaired_option = re.sub(
-                re.escape(prefix),
-                prefix,
-                repaired_option,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        options.append(repaired_option)
+            brace_index = repaired_option.find("{")
+            prefix_start = brace_index - len(prefix)
+            if (
+                brace_index >= 0
+                and prefix_start >= 0
+                and repaired_option[prefix_start:brace_index].casefold()
+                == prefix.casefold()
+            ):
+                options.append(
+                    repaired_option[:prefix_start]
+                    + prefix
+                    + repaired_option[brace_index:]
+                )
     repaired: list[str] = []
     for candidate in options[:16]:
         for hit in scan_text(candidate, pattern):
@@ -777,6 +872,7 @@ def _process_image_worker(
     remaining_invocations: int,
     remaining_text_bytes: int,
 ):
+    configure_opencv_runtime()
     dependencies = _load_ocr_dependencies()
     if dependencies is None:
         raise RuntimeError("OCR dependencies became unavailable")

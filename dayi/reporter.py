@@ -62,6 +62,7 @@ class ToolResult:
     skip_reason: str = ""
     extracted_dir: str | None = None
     extracted_flags: dict[str, list[str]] = field(default_factory=dict)
+    stream_flags: dict[str, list[str]] = field(default_factory=dict)
     artifacts_found: list[ArtifactFinding] = field(default_factory=list)
     extraction_succeeded: bool = False
     document_findings: list[DocumentFinding] = field(default_factory=list)
@@ -299,6 +300,11 @@ def _build_notes_text(report: ScanReport) -> str:
 
         if tr.flags_found:
             lines.append(f"    Flagler: {', '.join(tr.flags_found)}")
+
+        if tr.stream_flags:
+            lines.append("    Stream flag sources:")
+            for source, flags in tr.stream_flags.items():
+                lines.append(f"      [{source}]: {', '.join(flags)}")
 
         if tr.artifacts_found:
             lines.append("    Artifact/ipucu:")
@@ -602,6 +608,11 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
         if tr.flags_found:
             lines.append(f"  Flagler: {', '.join(tr.flags_found)}")
 
+        if tr.stream_flags:
+            lines.append("  Stream Flag Kaynakları:")
+            for source, flags in tr.stream_flags.items():
+                lines.append(f"    [{source}]: {', '.join(flags)}")
+
         if tr.extracted_flags:
             lines.append("  Çıkarılan Dosyalardaki Flagler:")
             for fname, flags in tr.extracted_flags.items():
@@ -676,6 +687,7 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
             "flags_found":     tr.flags_found,
             "extracted_dir":   tr.extracted_dir,
             "extracted_flags": tr.extracted_flags,
+            "stream_flags":    tr.stream_flags,
             "artifacts_found": [_artifact_to_dict(item) for item in tr.artifacts_found],
             "document_findings": [item.to_dict() for item in tr.document_findings],
             "ocr_findings": [item.to_dict() for item in tr.ocr_findings],

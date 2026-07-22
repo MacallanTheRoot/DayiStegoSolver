@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 from dayi.reporter import ToolResult
+from dayi.scanner import SubprocessFlagScanner
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -72,15 +73,21 @@ async def run_zsteg(
         return make_skipped_result(TOOL_NAME, f"{BINARY} not found on PATH (gem install zsteg)", cmd)
 
     logger.info(TOOL_INTROS[TOOL_NAME])
-    rc, stdout, stderr, elapsed, timed_out = await async_run_command(cmd, TOOL_NAME, timeout)
+    stream_scanner = SubprocessFlagScanner(flag_pattern)
+    rc, stdout, stderr, elapsed, timed_out = await async_run_command(
+        cmd,
+        TOOL_NAME,
+        timeout,
+        stdout_observer=stream_scanner.stdout,
+        stderr_observer=stream_scanner.stderr,
+    )
 
-    flags: list[str] = []
+    stream_flags = stream_scanner.findings(stdout, stderr)
+    flags = list(dict.fromkeys(
+        flag for hits in stream_flags.values() for flag in hits
+    ))
     if not timed_out:
         logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
-        flags = list(dict.fromkeys(
-            [m.group(0) for m in flag_pattern.finditer(stdout)] +
-            [m.group(0) for m in flag_pattern.finditer(stderr)]
-        ))
 
     return ToolResult(
         tool_name=TOOL_NAME,
@@ -91,6 +98,7 @@ async def run_zsteg(
         flags_found=flags,
         elapsed_seconds=elapsed,
         timed_out=timed_out,
+        stream_flags=stream_flags,
     )
 
 
