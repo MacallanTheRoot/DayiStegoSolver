@@ -31,6 +31,7 @@ MAX_AGGREGATE_DECODED_BYTES = 16 * 1024 * 1024
 MAX_DIRECT_FLAGS = 64
 MAX_DIRECT_FLAG_CHARACTERS = 64 * 1024
 MAX_DIRECT_FLAG_LENGTH = 2048
+MAX_BINARY_ASCII_CANDIDATES = 32
 DEFAULT_HINT_LIMIT = 10
 VERBOSE_HINT_LIMIT = 25
 
@@ -80,6 +81,37 @@ _MORSE = {
     "...--": "3", "....-": "4", ".....": "5", "-....": "6",
     "--...": "7", "---..": "8", "----.": "9",
 }
+
+# Printable flag-oriented subset of SNOW 1.1's fixed Huffman table. The
+# whitespace unpacking and prefix decoding remain bounded and dependency-free.
+_SNOW_HUFFMAN_CODES = {
+    "0101": "a", "001001": "b", "110110": "c", "01000": "d",
+    "1100": "e", "101010": "f", "011101": "g", "10001": "h",
+    "0011": "i", "1010011111": "j", "0100110": "k", "01111": "l",
+    "101110": "m", "0001": "n", "0110": "o", "100001": "p",
+    "10111111101": "q", "11010": "r", "0000": "s", "1001": "t",
+    "110111": "u", "0111001": "v", "001011": "w", "10101111": "x",
+    "100000": "y", "1010011000": "z", "01001111": "A",
+    "1011110110": "B", "101100011": "C", "101001101": "D",
+    "00100010": "E", "001010010": "F", "1011000000": "G",
+    "1011001101": "H", "0111000": "I", "10110000011": "J",
+    "10110001011": "K", "001010100": "L", "101100111": "M",
+    "101001011": "N", "101100001": "O", "010011100": "P",
+    "1010011110001": "Q", "101001110": "R", "10100100": "S",
+    "10101110": "T", "1011110101": "U", "10100111101": "V",
+    "1011000100": "W", "10110000010": "X", "0100111010": "Y",
+    "010011101111": "Z", "0010000": "0", "01001011": "1",
+    "101100101": "2", "001010101": "3", "001010011": "4",
+    "1011110111": "5", "1011001100": "6", "0100101001": "7",
+    "1010011001": "8", "001010000": "9", "10111111100": "_",
+    "1010011110000": "{", "0100111011101": "}", "10111110": "-",
+    "0100101000": "!", "1010010100": "?", "101111110": "(",
+    "00100011": ")", "1010110": ",", "101000": ".",
+    "101111001": "/", "101111000": ":", "10111111110": ";",
+    "10100101010": "=", "101001111001": "[", "101001010111": "]",
+    "101001010110": "|", "111": " ",
+}
+_MAX_SNOW_HUFFMAN_CODE = max(map(len, _SNOW_HUFFMAN_CODES))
 
 
 @dataclass(frozen=True)
@@ -570,6 +602,123 @@ def _bits_to_text(bits: str, width: int, offset: int) -> str | None:
     return text if _useful_decoded(text) else None
 
 
+def _decode_binary_ascii(
+    bit_streams: tuple[str, ...],
+    width: int,
+    offset: int,
+    *,
+    lsb_first: bool,
+) -> str | None:
+    """Decode bounded ASCII groups while preserving meaningful NUL evidence."""
+    output: list[str] = []
+    for bits in bit_streams:
+        usable = bits[offset:]
+        usable = usable[:len(usable) - (len(usable) % width)]
+        for index in range(0, len(usable), width):
+            group = usable[index:index + width]
+            if lsb_first:
+                group = group[::-1]
+            value = int(group, 2)
+            if value > 0x7f:
+                return None
+            output.append(chr(value))
+    if not output:
+        return None
+    decoded = "".join(output).rstrip("\x00")
+    if not decoded or "\x00" in decoded:
+        return None
+    return decoded
+
+
+def _strict_binary_candidate(
+    value: str,
+    pattern: re.Pattern,
+) -> tuple[str, ...] | None:
+    """Retain flags or strongly printable text, never control-heavy gibberish."""
+    flags = _find_flags(value, pattern)
+    printable, controls = _ratios(value)
+    if controls > 0.02 or printable < 0.90:
+        return None
+    if flags:
+        return flags
+    if _find_flags(value[::-1], pattern):
+        return ()
+    score, _unused_flags = _candidate_score(value, pattern)
+    if printable < 0.95 or score < 80:
+        return None
+    return ()
+
+
+def _emit_binary_ascii_variants(
+    bit_streams: tuple[str, ...],
+    collector: _Collector,
+    decoder: str,
+    source_variant: str,
+    *,
+    source: str,
+) -> None:
+    """Try bounded mappings, bit orders, widths, and offsets with strict filtering."""
+    symbol_count = sum(len(bits) for bits in bit_streams)
+    if (
+        not bit_streams
+        or symbol_count < 32
+        or symbol_count > MAX_ANALYSIS_CHARACTERS
+    ):
+        return
+    emitted = 0
+    for width in (8, 7):
+        for inverted, mapping in (
+            (False, "zero-one"),
+            (True, "one-zero"),
+        ):
+            streams = tuple(
+                "".join("1" if bit == "0" else "0" for bit in bits)
+                if inverted else bits
+                for bits in bit_streams
+            )
+            for lsb_first, bit_order in (
+                (False, "msb-first"),
+                (True, "lsb-first"),
+            ):
+                for offset in range(8):
+                    decoded = _decode_binary_ascii(
+                        streams,
+                        width,
+                        offset,
+                        lsb_first=lsb_first,
+                    )
+                    if decoded is None:
+                        continue
+                    direct_flags = _strict_binary_candidate(
+                        decoded, collector.pattern
+                    )
+                    if direct_flags is None:
+                        continue
+                    if collector.add(
+                        decoded,
+                        (decoder,) if decoder == "case_binary_ascii" else (
+                            decoder,
+                            "binary",
+                        ),
+                        (
+                            f"{source_variant};{width}-bit;{bit_order};"
+                            f"mapping={mapping};offset={offset}"
+                        ),
+                        depth=1,
+                        evidence=(
+                            f"symbols:{symbol_count}",
+                            f"group-size:{width}",
+                            f"bit-order:{bit_order}",
+                            "strict-printable-filter",
+                        ),
+                        source=source,
+                        known_direct_flags=direct_flags,
+                    ):
+                        emitted += 1
+                    if emitted >= MAX_BINARY_ASCII_CANDIDATES:
+                        return
+
+
 def _emit_bit_variants(
     bits: str,
     collector: _Collector,
@@ -687,19 +836,191 @@ def _bacon_candidates(text: str, collector: _Collector) -> None:
             _emit_bacon("".join("0" if word == unique_words[0] else "1" for word in words), collector, "two-word-classes")
 
 
-def _whitespace_candidates(raw: bytes, text: str, collector: _Collector) -> None:
-    spaces_tabs = "".join(character for character in text if character in " \t")
-    if len(spaces_tabs) >= 16 and min(spaces_tabs.count(" "), spaces_tabs.count("\t")) >= 4:
-        _emit_bit_variants("".join("0" if char == " " else "1" for char in spaces_tabs), collector, "whitespace", "space-vs-tab", source="raw-whitespace")
+def _case_binary_ascii_candidates(text: str, collector: _Collector) -> None:
+    """Decode direct case-as-bit ASCII independently from classical Bacon."""
+    letters = [
+        character
+        for character in text
+        if character.isalpha()
+        and (character.isupper() or character.islower())
+    ]
+    if len(letters) < 32 or len(letters) > MAX_ANALYSIS_CHARACTERS:
+        return
+    bits = "".join("1" if character.isupper() else "0" for character in letters)
+    _emit_binary_ascii_variants(
+        (bits,),
+        collector,
+        "case_binary_ascii",
+        "alphabetic-case",
+        source="text",
+    )
 
-    trailing: list[str] = []
+
+def _snow_whitespace_bits(text: str) -> str | None:
+    """Unpack bounded SNOW-style trailing runs into three-bit values."""
+    output: list[str] = []
+    bit_count = 0
+    started = False
     for line in text.splitlines():
         match = re.search(r"([ \t]+)$", line)
+        if match is None:
+            continue
+        run = match.group(1)
+        if not started:
+            if not run.startswith("\t"):
+                continue
+            started = True
+            run = run[1:]
+        spaces = 0
+        for character in run:
+            if character == " ":
+                spaces += 1
+                continue
+            if spaces > 7:
+                return None
+            output.append(f"{spaces:03b}"[::-1])
+            bit_count += 3
+            spaces = 0
+        if spaces:
+            if spaces > 7:
+                return None
+            output.append(f"{spaces:03b}"[::-1])
+            bit_count += 3
+        if bit_count > MAX_ANALYSIS_CHARACTERS:
+            return None
+    bits = "".join(output)
+    return bits if started and len(bits) >= 24 else None
+
+
+def _snow_huffman_decode(bits: str) -> str | None:
+    """Decode SNOW's fixed printable Huffman subset with strict prefix bounds."""
+    output: list[str] = []
+    prefix = ""
+    for bit in bits:
+        prefix += bit
+        character = _SNOW_HUFFMAN_CODES.get(prefix)
+        if character is not None:
+            output.append(character)
+            prefix = ""
+            if len(output) >= MAX_CANDIDATE_OUTPUT:
+                break
+        elif len(prefix) > _MAX_SNOW_HUFFMAN_CODE:
+            return None
+    return "".join(output) or None
+
+
+def _snow_candidates(text: str, collector: _Collector) -> None:
+    bits = _snow_whitespace_bits(text)
+    if bits is None:
+        return
+    variants: list[tuple[str, str]] = []
+    uncompressed = _decode_binary_ascii(
+        (bits,), 8, 0, lsb_first=False
+    )
+    if uncompressed is not None:
+        variants.append((uncompressed, "snow-uncompressed"))
+    compressed = _snow_huffman_decode(bits)
+    if compressed is not None:
+        variants.append((compressed, "snow-huffman"))
+    for decoded, variant in variants:
+        direct_flags = _strict_binary_candidate(decoded, collector.pattern)
+        if direct_flags is None:
+            continue
+        collector.add(
+            decoded,
+            ("whitespace", "snow"),
+            variant,
+            depth=1,
+            evidence=(
+                f"symbols:{len(bits)}",
+                "three-bit-space-counts",
+                "strict-printable-filter",
+            ),
+            source="raw-whitespace",
+            known_direct_flags=direct_flags,
+        )
+
+
+def _whitespace_candidates(raw: bytes, text: str, collector: _Collector) -> None:
+    spaces_tabs = "".join(character for character in text if character in " \t")
+    trailing: list[str] = []
+    lines = text.splitlines()
+    trailing_by_line: list[str] = []
+    whitespace_by_line: list[str] = []
+    for line in lines:
+        whitespace = "".join(character for character in line if character in " \t")
+        if whitespace:
+            whitespace_by_line.append(whitespace)
+        match = re.search(r"([ \t]+)$", line)
         if match:
-            trailing.extend(match.group(1))
+            run = match.group(1)
+            trailing.extend(run)
+            trailing_by_line.append(run)
     trailing_stream = "".join(trailing)
-    if len(trailing_stream) >= 16 and {" ", "\t"}.issubset(trailing_stream):
-        _emit_bit_variants("".join("0" if char == " " else "1" for char in trailing_stream), collector, "whitespace", "trailing-space-vs-tab", source="raw-whitespace")
+    if len(trailing_stream) >= 32:
+        _emit_binary_ascii_variants(
+            ("".join("0" if char == " " else "1" for char in trailing_stream),),
+            collector,
+            "whitespace",
+            "trailing-space-vs-tab",
+            source="raw-whitespace",
+        )
+
+    first_carrier = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if any(character not in " \t" for character in line)
+        ),
+        None,
+    )
+    if first_carrier is not None:
+        carrier_line = lines[first_carrier]
+        last_visible = max(
+            index
+            for index, character in enumerate(carrier_line)
+            if character not in " \t"
+        )
+        inline_region = carrier_line[last_visible + 1:] + "\n".join(
+            lines[first_carrier + 1:]
+        )
+        inline_stream = "".join(
+            character for character in inline_region if character in " \t"
+        )
+        if len(inline_stream) >= 32:
+            _emit_binary_ascii_variants(
+                ("".join("0" if char == " " else "1" for char in inline_stream),),
+                collector,
+                "whitespace",
+                "inline-after-first-carrier",
+                source="raw-whitespace",
+            )
+
+    for streams, variant in (
+        (whitespace_by_line, "per-line-space-tab"),
+        (trailing_by_line, "per-line-trailing-space-tab"),
+    ):
+        bit_streams = tuple(
+            "".join("0" if char == " " else "1" for char in stream)
+            for stream in streams
+        )
+        if sum(map(len, bit_streams)) >= 32:
+            _emit_binary_ascii_variants(
+                bit_streams,
+                collector,
+                "whitespace",
+                variant,
+                source="raw-whitespace",
+            )
+
+    if len(spaces_tabs) >= 32:
+        _emit_binary_ascii_variants(
+            ("".join("0" if char == " " else "1" for char in spaces_tabs),),
+            collector,
+            "whitespace",
+            "all-space-tab",
+            source="raw-whitespace",
+        )
 
     runs = re.findall(r"(?<! )[ ]{1,2}(?! )", text)
     if len(runs) >= 16 and {len(run) for run in runs} == {1, 2}:
@@ -1142,7 +1463,9 @@ def analyze_text_input(source: TextInput, flag_pattern: re.Pattern) -> TextStego
     collector.block(text.strip())
 
     _bacon_candidates(text, collector)
+    _case_binary_ascii_candidates(text, collector)
     _whitespace_candidates(source.raw_bytes, text, collector)
+    _snow_candidates(text, collector)
     _zero_width_candidates(text, collector)
     _homoglyph_candidates(text, collector)
     _structural_candidates(text, collector)

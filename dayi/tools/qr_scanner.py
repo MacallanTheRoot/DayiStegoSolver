@@ -643,12 +643,12 @@ async def run_qr_scanner(
 ) -> ToolResult:
     """Decode QR symbols passively and feed their text to bounded analyzers."""
     command = ["internal:qr", str(target), str(workspace)]
-    selected = backend if backend is not None else select_qr_backend()
-    if selected is None:
-        return make_skipped_result(TOOL_NAME, "no optional QR backend is available", command)
     initial = list(await asyncio.to_thread(discover_images, target, workspace))
     if not initial:
         return make_skipped_result(TOOL_NAME, "no bounded supported images found", command)
+    selected = backend if backend is not None else select_qr_backend()
+    if selected is None:
+        return make_skipped_result(TOOL_NAME, "no optional QR backend is available", command)
 
     started = time.monotonic()
     deadline = started + min(45.0, max(1.0, timeout))

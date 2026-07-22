@@ -173,7 +173,13 @@ def _call_image_to_string(
 
 
 def _structured_ocr(
-    engine: Any, image: Any, timeout: float, language: str, psm: int
+    engine: Any,
+    image: Any,
+    timeout: float,
+    language: str,
+    psm: int,
+    *,
+    order_words_by_x: bool = False,
 ) -> _OCRPass:
     image_to_data = getattr(engine, "image_to_data", None)
     if callable(image_to_data):
@@ -193,6 +199,7 @@ def _structured_ocr(
             words: list[str] = []
             confidences: list[float] = []
             boxes: list[tuple[int, int, int, int]] = []
+            positioned_words: list[tuple[int, str]] = []
             texts = data.get("text", [])[:4096]
             for index, raw_word in enumerate(texts):
                 word = str(raw_word).strip()
@@ -207,12 +214,16 @@ def _structured_ocr(
                     confidences.append(confidence)
                 if len(boxes) < 64:
                     try:
-                        boxes.append(tuple(int(data[key][index]) for key in (
+                        box = tuple(int(data[key][index]) for key in (
                             "left", "top", "width", "height"
-                        )))
+                        ))
+                        boxes.append(box)
+                        positioned_words.append((box[0], word))
                     except (IndexError, KeyError, TypeError, ValueError):
                         pass
             if words:
+                if order_words_by_x and len(positioned_words) == len(words):
+                    words = [word for _left, word in sorted(positioned_words)]
                 return _OCRPass(
                     " ".join(words),
                     statistics.fmean(confidences) if confidences else None,
@@ -279,6 +290,8 @@ def _build_variants(
     filters = dependencies.image_filter
     if ops is None or not hasattr(image, "convert"):
         return
+    resampling = getattr(dependencies.image_module, "Resampling", None)
+    resize_filter = getattr(resampling, "LANCZOS", None)
 
     if active_budget.reserve(width, height, bytes_per_pixel=1):
         variant = ops.grayscale(image)
@@ -328,6 +341,53 @@ def _build_variants(
         finally:
             _close_image(variant)
 
+    # Large photographs often contain one tiny line on a monitor bezel or
+    # caption band. Whole-image OCR cannot upscale those sources without
+    # exceeding the decoded-image cap, so examine one bounded relative band.
+    crop_box = (
+        int(width * 0.28),
+        int(height * 0.603),
+        int(width * 0.63),
+        int(height * 0.625),
+    )
+    crop_width = crop_box[2] - crop_box[0]
+    crop_height = crop_box[3] - crop_box[1]
+    crop_scale = 10
+    scaled_width = crop_width * crop_scale
+    scaled_height = crop_height * crop_scale
+    if (
+        width >= 1000
+        and height >= 1000
+        and crop_width >= 64
+        and crop_height >= 8
+        and active_budget.reserve(
+            scaled_width,
+            scaled_height,
+            bytes_per_pixel=2,
+        )
+    ):
+        crop = image.crop(crop_box)
+        gray = ops.grayscale(crop)
+        _close_image(crop)
+        try:
+            contrasted = ops.autocontrast(gray, cutoff=1)
+        finally:
+            _close_image(gray)
+        try:
+            variant = contrasted.resize(
+                (scaled_width, scaled_height), resize_filter
+            )
+        finally:
+            _close_image(contrasted)
+        if filters is not None:
+            sharpened = variant.filter(filters.SHARPEN)
+            _close_image(variant)
+            variant = sharpened
+        try:
+            yield "scale-lower-center-band-10x", variant
+        finally:
+            _close_image(variant)
+
     mode = str(getattr(image, "mode", ""))
     if "A" in mode:
         image_module = dependencies.image_module
@@ -369,8 +429,6 @@ def _build_variants(
                     finally:
                         _close_image(variant)
 
-    resampling = getattr(dependencies.image_module, "Resampling", None)
-    resize_filter = getattr(resampling, "LANCZOS", None)
     if max(width, height) <= 1600 and active_budget.reserve(
         width * 2, height * 2, bytes_per_pixel=channels
     ):
@@ -404,6 +462,8 @@ def _build_variants(
 
 
 def _psm_modes(name: str, image: Any, exhaustive: bool) -> tuple[int, ...]:
+    if name == "scale-lower-center-band-10x":
+        return (6, 7, 11)
     if name in {"original", "grayscale"}:
         modes = (3, 6, 11)
     elif name.startswith(("scale", "rot")) and image.size[0] >= image.size[1] * 3:
@@ -438,6 +498,33 @@ def _repair_flag_candidates(text: str, pattern: re.Pattern) -> tuple[str, ...]:
     options.append(re.sub(r"\s*([{}_])\s*", r"\1", options[0]))
     translations = str.maketrans({"|": "I", "–": "-"})
     options.append(options[0].translate(translations))
+    compact = re.sub(r"\s+", "", options[0])
+    options.append(compact)
+
+    # Sparse-line OCR may split a fixed flag prefix and commonly reads a final
+    # lowercase i/l as '!'. Generate only a tiny, regex-gated repair set.
+    prefix_match = re.search(
+        r"([A-Za-z][A-Za-z0-9_-]{1,63})\\\{", pattern.pattern
+    )
+    prefixes = (prefix_match.group(1),) if prefix_match is not None else ()
+    for replacement in ("i",):
+        repaired_option = re.sub(
+            r"(?<=[A-Za-z])!(?=[^A-Za-z]|$)", replacement, compact
+        )
+        repaired_option = re.sub(
+            r"(?<=[A-Za-z0-9])[.,;:'\"]+(?=[A-Za-z0-9_])",
+            "_",
+            repaired_option,
+        )
+        for prefix in prefixes:
+            repaired_option = re.sub(
+                re.escape(prefix),
+                prefix,
+                repaired_option,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        options.append(repaired_option)
     repaired: list[str] = []
     for candidate in options[:16]:
         for hit in scan_text(candidate, pattern):
@@ -567,6 +654,10 @@ def _process_image_sync(
                             min(OCR_INVOCATION_TIMEOUT, remaining),
                             language,
                             psm,
+                            order_words_by_x=(
+                                name == "scale-lower-center-band-10x"
+                                and psm == 11
+                            ),
                         )
                         invocations += 1
                         safe = _safe_ocr_text(
@@ -597,7 +688,8 @@ def _process_image_sync(
                                         if name.startswith("rot") else 0
                                     ),
                                     scale=(
-                                        4 if "4x" in name
+                                        10 if "10x" in name
+                                        else 4 if "4x" in name
                                         else 2 if "2x" in name else 1
                                     ),
                                     channel=(
@@ -638,7 +730,8 @@ def _process_image_sync(
                                     if name.startswith("rot") else 0
                                 ),
                                 scale=(
-                                    4 if "4x" in name
+                                    10 if "10x" in name
+                                    else 4 if "4x" in name
                                     else 2 if "2x" in name else 1
                                 ),
                                 channel=(

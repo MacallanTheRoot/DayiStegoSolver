@@ -85,7 +85,7 @@ class StegseekEligibilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             result.skip_reason,
-            "stegseek requires JPEG/BMP/WAV; detected format: UNKNOWN",
+            "stegseek requires JPEG/BMP/WAV; detected format: TEXT",
         )
 
     async def test_misleading_jpg_extensions_are_skipped(self) -> None:

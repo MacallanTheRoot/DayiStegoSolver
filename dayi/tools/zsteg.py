@@ -56,10 +56,6 @@ async def run_zsteg(
     """
     cmd = [BINARY, "-a", str(target)]
 
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
-        return make_skipped_result(TOOL_NAME, f"{BINARY} not found on PATH (gem install zsteg)", cmd)
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -70,6 +66,10 @@ async def run_zsteg(
             f"zsteg buna yaramaz, boşuna yormayalım aleti. Atlıyorum..."
         )
         return make_skipped_result(TOOL_NAME, skip_reason, cmd)
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(TOOL_NAME, f"{BINARY} not found on PATH (gem install zsteg)", cmd)
 
     logger.info(TOOL_INTROS[TOOL_NAME])
     rc, stdout, stderr, elapsed, timed_out = await async_run_command(cmd, TOOL_NAME, timeout)
