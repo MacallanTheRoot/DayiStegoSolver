@@ -31,9 +31,19 @@ from dayi.image_analysis import (
 from dayi.persona import log_artifact
 from dayi.reporter import ToolResult
 from dayi.scanner import ArtifactFinding, scan_artifacts, scan_text
-from dayi.text_stego import analyze_text_input, detect_text_bytes
+from dayi.text_stego import (
+    MAX_DIRECT_FLAG_LENGTH,
+    analyze_text_input,
+    detect_text_bytes,
+)
 from dayi.tools._base import async_run_command, async_run_isolated, make_skipped_result
+from dayi.tools._opencv import configure_opencv_runtime
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
+
+try:
+    from re import _parser as _regex_parser
+except ImportError:  # pragma: no cover - Python 3.10 compatibility
+    import sre_parse as _regex_parser
 
 
 TOOL_NAME = "ocr_scanner"
@@ -173,7 +183,13 @@ def _call_image_to_string(
 
 
 def _structured_ocr(
-    engine: Any, image: Any, timeout: float, language: str, psm: int
+    engine: Any,
+    image: Any,
+    timeout: float,
+    language: str,
+    psm: int,
+    *,
+    order_words_by_x: bool = False,
 ) -> _OCRPass:
     image_to_data = getattr(engine, "image_to_data", None)
     if callable(image_to_data):
@@ -193,6 +209,7 @@ def _structured_ocr(
             words: list[str] = []
             confidences: list[float] = []
             boxes: list[tuple[int, int, int, int]] = []
+            positioned_words: list[tuple[int, str]] = []
             texts = data.get("text", [])[:4096]
             for index, raw_word in enumerate(texts):
                 word = str(raw_word).strip()
@@ -207,12 +224,16 @@ def _structured_ocr(
                     confidences.append(confidence)
                 if len(boxes) < 64:
                     try:
-                        boxes.append(tuple(int(data[key][index]) for key in (
+                        box = tuple(int(data[key][index]) for key in (
                             "left", "top", "width", "height"
-                        )))
+                        ))
+                        boxes.append(box)
+                        positioned_words.append((box[0], word))
                     except (IndexError, KeyError, TypeError, ValueError):
                         pass
             if words:
+                if order_words_by_x and len(positioned_words) == len(words):
+                    words = [word for _left, word in sorted(positioned_words)]
                 return _OCRPass(
                     " ".join(words),
                     statistics.fmean(confidences) if confidences else None,
@@ -279,6 +300,8 @@ def _build_variants(
     filters = dependencies.image_filter
     if ops is None or not hasattr(image, "convert"):
         return
+    resampling = getattr(dependencies.image_module, "Resampling", None)
+    resize_filter = getattr(resampling, "LANCZOS", None)
 
     if active_budget.reserve(width, height, bytes_per_pixel=1):
         variant = ops.grayscale(image)
@@ -328,6 +351,53 @@ def _build_variants(
         finally:
             _close_image(variant)
 
+    # Large photographs often contain one tiny line on a monitor bezel or
+    # caption band. Whole-image OCR cannot upscale those sources without
+    # exceeding the decoded-image cap, so examine one bounded relative band.
+    crop_box = (
+        int(width * 0.28),
+        int(height * 0.603),
+        int(width * 0.63),
+        int(height * 0.625),
+    )
+    crop_width = crop_box[2] - crop_box[0]
+    crop_height = crop_box[3] - crop_box[1]
+    crop_scale = 10
+    scaled_width = crop_width * crop_scale
+    scaled_height = crop_height * crop_scale
+    if (
+        width >= 1000
+        and height >= 1000
+        and crop_width >= 64
+        and crop_height >= 8
+        and active_budget.reserve(
+            scaled_width,
+            scaled_height,
+            bytes_per_pixel=2,
+        )
+    ):
+        crop = image.crop(crop_box)
+        gray = ops.grayscale(crop)
+        _close_image(crop)
+        try:
+            contrasted = ops.autocontrast(gray, cutoff=1)
+        finally:
+            _close_image(gray)
+        try:
+            variant = contrasted.resize(
+                (scaled_width, scaled_height), resize_filter
+            )
+        finally:
+            _close_image(contrasted)
+        if filters is not None:
+            sharpened = variant.filter(filters.SHARPEN)
+            _close_image(variant)
+            variant = sharpened
+        try:
+            yield "scale-lower-center-band-10x", variant
+        finally:
+            _close_image(variant)
+
     mode = str(getattr(image, "mode", ""))
     if "A" in mode:
         image_module = dependencies.image_module
@@ -369,8 +439,6 @@ def _build_variants(
                     finally:
                         _close_image(variant)
 
-    resampling = getattr(dependencies.image_module, "Resampling", None)
-    resize_filter = getattr(resampling, "LANCZOS", None)
     if max(width, height) <= 1600 and active_budget.reserve(
         width * 2, height * 2, bytes_per_pixel=channels
     ):
@@ -404,6 +472,8 @@ def _build_variants(
 
 
 def _psm_modes(name: str, image: Any, exhaustive: bool) -> tuple[int, ...]:
+    if name == "scale-lower-center-band-10x":
+        return (6, 7, 11)
     if name in {"original", "grayscale"}:
         modes = (3, 6, 11)
     elif name.startswith(("scale", "rot")) and image.size[0] >= image.size[1] * 3:
@@ -430,14 +500,126 @@ def _confidence(text: str, flags: tuple[str, ...], mean: float | None, repeats: 
     return "low"
 
 
+def _literal_flag_prefixes(pattern: re.Pattern) -> tuple[str, ...]:
+    """Derive bounded literal prefixes from regex semantics up to ``{``."""
+    max_prefixes = 16
+    max_prefix_length = 64
+    max_depth = 16
+
+    def walk(sequence, prefixes: tuple[str, ...], depth: int):
+        if depth > max_depth:
+            return (), False
+        current = prefixes
+        for operation, argument in sequence:
+            if operation in {
+                _regex_parser.AT,
+                _regex_parser.ASSERT,
+                _regex_parser.ASSERT_NOT,
+            }:
+                continue
+            if operation is _regex_parser.LITERAL:
+                character = chr(argument)
+                if character == "{":
+                    return current, True
+                if not re.fullmatch(r"[A-Za-z0-9_-]", character):
+                    return (), False
+                current = tuple(
+                    prefix + character for prefix in current
+                    if len(prefix) < max_prefix_length
+                )
+                if not current:
+                    return (), False
+                continue
+            if operation is _regex_parser.SUBPATTERN:
+                current, found = walk(argument[-1], current, depth + 1)
+                if found:
+                    return current, True
+                if not current:
+                    return (), False
+                continue
+            if operation is _regex_parser.BRANCH:
+                branch_results = [
+                    walk(branch, current, depth + 1)
+                    for branch in argument[1][:max_prefixes]
+                ]
+                if not branch_results:
+                    return (), False
+                found_values = {found for _items, found in branch_results}
+                if len(found_values) != 1:
+                    return (), False
+                combined: list[str] = []
+                for items, _found in branch_results:
+                    for item in items:
+                        if item not in combined:
+                            combined.append(item)
+                        if len(combined) >= max_prefixes:
+                            break
+                    if len(combined) >= max_prefixes:
+                        break
+                current = tuple(combined)
+                found = branch_results[0][1]
+                if found:
+                    return current, True
+                if not current:
+                    return (), False
+                continue
+            return (), False
+        return current, False
+
+    try:
+        parsed = _regex_parser.parse(pattern.pattern, pattern.flags)
+        prefixes, found_brace = walk(parsed, ("",), 0)
+    except (AttributeError, OverflowError, RuntimeError, TypeError, ValueError):
+        return ()
+    if not found_brace:
+        return ()
+    return tuple(
+        prefix for prefix in prefixes
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{1,63}", prefix)
+    )[:max_prefixes]
+
+
 def _repair_flag_candidates(text: str, pattern: re.Pattern) -> tuple[str, ...]:
     """Try a tiny fixed repair set only around brace-like candidate text."""
-    if not any(character in text for character in "{}[]"):
+    if (
+        len(text) > MAX_DIRECT_FLAG_LENGTH
+        or not any(character in text for character in "{}[]")
+    ):
         return ()
     options = [text.replace("[", "{").replace("]", "}")]
     options.append(re.sub(r"\s*([{}_])\s*", r"\1", options[0]))
     translations = str.maketrans({"|": "I", "–": "-"})
     options.append(options[0].translate(translations))
+    compact = re.sub(r"\s+", "", options[0])
+    options.append(compact)
+
+    # Sparse-line OCR may split a fixed flag prefix and commonly reads a final
+    # lowercase i/l as '!'. Generate only a tiny, regex-gated repair set. The
+    # prefix comes from parsed regex semantics, not a particular brace spelling.
+    prefixes = _literal_flag_prefixes(pattern)
+    for replacement in ("i",):
+        repaired_option = re.sub(
+            r"(?<=[A-Za-z])!(?=[^A-Za-z]|$)", replacement, compact
+        )
+        repaired_option = re.sub(
+            r"(?<=[A-Za-z0-9])[.,;:'\"]+(?=[A-Za-z0-9_])",
+            "_",
+            repaired_option,
+        )
+        for prefix in prefixes:
+            brace_index = repaired_option.find("{")
+            prefix_start = brace_index - len(prefix)
+            if (
+                brace_index >= 0
+                and prefix_start >= 0
+                and repaired_option[prefix_start:brace_index].casefold()
+                == prefix.casefold()
+            ):
+                options.append(
+                    repaired_option[:prefix_start]
+                    + prefix
+                    + repaired_option[brace_index:]
+                )
     repaired: list[str] = []
     for candidate in options[:16]:
         for hit in scan_text(candidate, pattern):
@@ -567,6 +749,10 @@ def _process_image_sync(
                             min(OCR_INVOCATION_TIMEOUT, remaining),
                             language,
                             psm,
+                            order_words_by_x=(
+                                name == "scale-lower-center-band-10x"
+                                and psm == 11
+                            ),
                         )
                         invocations += 1
                         safe = _safe_ocr_text(
@@ -597,7 +783,8 @@ def _process_image_sync(
                                         if name.startswith("rot") else 0
                                     ),
                                     scale=(
-                                        4 if "4x" in name
+                                        10 if "10x" in name
+                                        else 4 if "4x" in name
                                         else 2 if "2x" in name else 1
                                     ),
                                     channel=(
@@ -638,7 +825,8 @@ def _process_image_sync(
                                     if name.startswith("rot") else 0
                                 ),
                                 scale=(
-                                    4 if "4x" in name
+                                    10 if "10x" in name
+                                    else 4 if "4x" in name
                                     else 2 if "2x" in name else 1
                                 ),
                                 channel=(
@@ -684,6 +872,7 @@ def _process_image_worker(
     remaining_invocations: int,
     remaining_text_bytes: int,
 ):
+    configure_opencv_runtime()
     dependencies = _load_ocr_dependencies()
     if dependencies is None:
         raise RuntimeError("OCR dependencies became unavailable")

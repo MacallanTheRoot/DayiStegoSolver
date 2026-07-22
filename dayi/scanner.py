@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import bisect
+import codecs
 import ipaddress
 import logging
 import math
@@ -19,6 +20,12 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
+
+from dayi.text_stego import (
+    MAX_DIRECT_FLAG_CHARACTERS,
+    MAX_DIRECT_FLAG_LENGTH,
+    MAX_DIRECT_FLAGS,
+)
 
 logger = logging.getLogger("dayi")
 
@@ -444,6 +451,82 @@ def _collect_matches(pattern: re.Pattern, text: str) -> list[str]:
 def scan_text(content: str, pattern: re.Pattern) -> list[str]:
     """Search text for all occurrences of a compiled flag pattern."""
     return _collect_matches(pattern, content)
+
+
+class IncrementalFlagScanner:
+    """Find bounded regex matches in one independently decoded byte stream."""
+
+    def __init__(self, pattern: re.Pattern) -> None:
+        self.pattern = pattern
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._tail = ""
+        self._matches: dict[str, None] = {}
+        self._matched_characters = 0
+        self._finished = False
+
+    def feed(self, chunk: bytes) -> None:
+        """Decode and scan one chunk without retaining the complete stream."""
+        if self._finished or not chunk:
+            return
+        self._scan_decoded(self._decoder.decode(chunk, final=False))
+
+    def finish(self) -> None:
+        """Flush an incomplete UTF-8 sequence using the established replacement policy."""
+        if self._finished:
+            return
+        self._finished = True
+        self._scan_decoded(self._decoder.decode(b"", final=True))
+
+    def _scan_decoded(self, decoded: str) -> None:
+        if not decoded:
+            return
+        window = self._tail + decoded
+        for flag in scan_text(window, self.pattern):
+            if flag in self._matches or len(flag) > MAX_DIRECT_FLAG_LENGTH:
+                continue
+            if (
+                len(self._matches) >= MAX_DIRECT_FLAGS
+                or self._matched_characters + len(flag)
+                > MAX_DIRECT_FLAG_CHARACTERS
+            ):
+                break
+            self._matches[flag] = None
+            self._matched_characters += len(flag)
+
+        # Any eligible match split at the next boundary is at most 2,048
+        # characters, so this established direct-flag limit is sufficient and
+        # prevents an unbounded regex carry buffer.
+        self._tail = window[-MAX_DIRECT_FLAG_LENGTH:]
+
+    @property
+    def flags(self) -> tuple[str, ...]:
+        return tuple(self._matches)
+
+    @property
+    def retained_state_characters(self) -> int:
+        """Expose the persistent character bound for deterministic tests."""
+        return len(self._tail) + self._matched_characters
+
+
+class SubprocessFlagScanner:
+    """Track bounded flag matches and their stdout/stderr source."""
+
+    def __init__(self, pattern: re.Pattern) -> None:
+        self.pattern = pattern
+        self.stdout = IncrementalFlagScanner(pattern)
+        self.stderr = IncrementalFlagScanner(pattern)
+
+    def findings(self, retained_stdout: str, retained_stderr: str) -> dict[str, list[str]]:
+        """Merge retained-text and incremental matches per stream with deduplication."""
+        findings: dict[str, list[str]] = {}
+        for source, retained, observer in (
+            ("stdout", retained_stdout, self.stdout),
+            ("stderr", retained_stderr, self.stderr),
+        ):
+            hits = list(dict.fromkeys(scan_text(retained, self.pattern) + list(observer.flags)))
+            if hits:
+                findings[source] = hits
+        return findings
 
 
 def scan_file(filepath: Path, pattern: re.Pattern) -> list[str]:

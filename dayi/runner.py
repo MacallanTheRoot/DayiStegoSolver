@@ -32,6 +32,11 @@ from dayi.tools._plugin import (
 )
 
 MAX_WORKSPACE_RETENTION_ENTRIES = 16_384
+_TIMEOUT_EXCEPTIONS = (
+    (TimeoutError,)
+    if asyncio.TimeoutError is TimeoutError
+    else (TimeoutError, asyncio.TimeoutError)
+)
 
 
 class WorkspaceConfigurationError(RuntimeError):
@@ -652,6 +657,11 @@ class DayiRunner:
                 )
         except asyncio.CancelledError:
             raise
+        except _TIMEOUT_EXCEPTIONS as exc:
+            logger.warning(
+                f"[runner] '{plugin_id}' eklentisinin süre bütçesi doldu: {exc}"
+            )
+            return self._timeout_result(plugin_id, exc)
         except Exception as exc:
             logger.error(
                 f"[runner] '{plugin_id}' eklentisinde beklenmedik hata: {exc}"
@@ -688,6 +698,20 @@ class DayiRunner:
         self._partial_results.append(result)
         self._results_by_plugin[plugin_id] = result
         return result
+
+    @staticmethod
+    def _timeout_result(plugin_id: str, exc: BaseException) -> ToolResult:
+        detail = str(exc).strip() or "plugin time budget exhausted"
+        return ToolResult(
+            tool_name=plugin_id,
+            command=[],
+            return_code=None,
+            stdout="",
+            stderr=f"Plugin timed out: {detail}",
+            flags_found=[],
+            elapsed_seconds=0.0,
+            timed_out=True,
+        )
 
     @staticmethod
     def _error_result(plugin_id: str, exc: BaseException) -> ToolResult:

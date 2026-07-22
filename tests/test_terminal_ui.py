@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import logging
 import re
 import tempfile
@@ -15,7 +16,7 @@ from dayi.persona import (
     _RichComponents,
     create_terminal_ui,
 )
-from dayi.reporter import ToolResult
+from dayi.reporter import ToolResult, write_json_report, write_txt_report
 from dayi.runner import DayiRunner
 from dayi.tools._plugin import (
     PluginContext,
@@ -310,6 +311,86 @@ class RunnerUIIntegrationTests(unittest.TestCase):
         self.assertIn(("plugin_finished", "broken", "failed"), ui.events)
         self.assertIn(("phase_finished", "CONCURRENT"), ui.events)
         self.assertEqual(ui.events[-1], ("close",))
+
+    def test_timeout_exceptions_and_results_keep_distinct_runner_semantics(self) -> None:
+        async def builtin_timeout(_context: PluginContext) -> ToolResult:
+            raise TimeoutError("built-in deadline exceeded")
+
+        async def asyncio_timeout(_context: PluginContext) -> ToolResult:
+            raise asyncio.TimeoutError("asyncio deadline exceeded")
+
+        async def returned_timeout(_context: PluginContext) -> ToolResult:
+            return ToolResult(
+                tool_name="returned-timeout",
+                command=["controlled", "--timeout"],
+                return_code=None,
+                stdout="",
+                stderr="controlled plugin time budget exhausted",
+                flags_found=[],
+                elapsed_seconds=1.25,
+                timed_out=True,
+            )
+
+        async def ordinary_failure(_context: PluginContext) -> ToolResult:
+            raise RuntimeError("ordinary plugin failure")
+
+        cases = (
+            ("builtin-timeout", builtin_timeout, "timed_out", True),
+            ("asyncio-timeout", asyncio_timeout, "timed_out", True),
+            ("returned-timeout", returned_timeout, "timed_out", True),
+            ("ordinary-failure", ordinary_failure, "failed", False),
+        )
+        for plugin_id, run, outcome, is_timeout in cases:
+            with self.subTest(plugin_id=plugin_id), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                target = root / "target.bin"
+                target.write_bytes(b"data")
+                ui = _RecordingUI()
+                registry = PluginRegistry((ToolPlugin(
+                    plugin_id=plugin_id,
+                    phase=PluginPhase.CONCURRENT,
+                    priority=10,
+                    run=run,
+                ),))
+                report = asyncio.run(DayiRunner(
+                    target,
+                    re.compile(r"FLAG\{.*?\}"),
+                    registry=registry,
+                    ui=ui,
+                ).run_all())
+                json_path = root / "report.json"
+                text_path = root / "report.txt"
+                write_json_report(report, json_path)
+                write_txt_report(report, text_path)
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+                rendered = text_path.read_text(encoding="utf-8")
+
+            result = report.tool_results[0]
+            serialized = payload["tool_results"][0]
+            self.assertEqual(result.timed_out, is_timeout)
+            self.assertEqual(result.error, not is_timeout)
+            self.assertEqual(result.skipped, not is_timeout)
+            self.assertEqual(serialized["timed_out"], is_timeout)
+            self.assertEqual(serialized["error"], not is_timeout)
+            self.assertEqual(serialized["skipped"], not is_timeout)
+            self.assertEqual(serialized["skip_reason"], result.skip_reason)
+            self.assertIn(("plugin_finished", plugin_id, outcome), ui.events)
+            if plugin_id == "returned-timeout":
+                self.assertEqual(result.command, ["controlled", "--timeout"])
+                self.assertEqual(serialized["command"], result.command)
+            else:
+                self.assertEqual(result.tool_name, plugin_id)
+            if is_timeout:
+                self.assertEqual(result.skip_reason, "")
+                self.assertNotIn("Unhandled plugin exception", result.stderr)
+                self.assertIn("time", result.stderr.lower())
+                self.assertIn("Durum  : TIMEOUT", rendered)
+                self.assertNotIn("ATLANDI", rendered)
+            else:
+                self.assertIn("Unhandled plugin exception", result.skip_reason)
+                self.assertIn("ordinary plugin failure", result.stderr)
+                self.assertIn("ATLANDI", rendered)
+                self.assertNotIn("TIMEOUT", rendered)
 
     def test_broken_ui_falls_back_without_aborting_plugins(self) -> None:
         class BrokenUI(TerminalUI):

@@ -7,7 +7,6 @@ import binascii
 import hashlib
 import importlib
 import json
-import os
 import re
 import shutil
 import time
@@ -41,6 +40,7 @@ from dayi.tools._base import (
     async_run_isolated,
     make_skipped_result,
 )
+from dayi.tools._opencv import configure_opencv_runtime
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
 
@@ -415,10 +415,9 @@ def _decode_native_worker(
     image_path = Path(path)
     inspect_image_dimensions(image_path)
     if backend_name == "opencv":
-        os.environ["OPENBLAS_NUM_THREADS"] = "1"
-        os.environ["OMP_NUM_THREADS"] = "1"
-        os.environ["MKL_NUM_THREADS"] = "1"
-        cv2 = importlib.import_module("cv2")
+        cv2 = configure_opencv_runtime()
+        if cv2 is None:
+            raise ImportError("OpenCV became unavailable")
         image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
         if image is None:
             return []
@@ -643,12 +642,12 @@ async def run_qr_scanner(
 ) -> ToolResult:
     """Decode QR symbols passively and feed their text to bounded analyzers."""
     command = ["internal:qr", str(target), str(workspace)]
-    selected = backend if backend is not None else select_qr_backend()
-    if selected is None:
-        return make_skipped_result(TOOL_NAME, "no optional QR backend is available", command)
     initial = list(await asyncio.to_thread(discover_images, target, workspace))
     if not initial:
         return make_skipped_result(TOOL_NAME, "no bounded supported images found", command)
+    selected = backend if backend is not None else select_qr_backend()
+    if selected is None:
+        return make_skipped_result(TOOL_NAME, "no optional QR backend is available", command)
 
     started = time.monotonic()
     deadline = started + min(45.0, max(1.0, timeout))

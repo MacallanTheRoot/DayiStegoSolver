@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from dayi.reporter import ToolResult
-from dayi.scanner import scan_file
+from dayi.scanner import SubprocessFlagScanner, scan_file
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -75,14 +75,6 @@ async def run_steghide(
     """
     cmd = [BINARY, "info", "-p", "", str(target)]
 
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
-        return make_skipped_result(
-            TOOL_NAME,
-            f"{BINARY} not found on PATH (sudo apt install steghide)",
-            cmd,
-        )
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -96,21 +88,33 @@ async def run_steghide(
         )
         return make_skipped_result(TOOL_NAME, skip_reason, cmd)
 
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(
+            TOOL_NAME,
+            f"{BINARY} not found on PATH (sudo apt install steghide)",
+            cmd,
+        )
+
     logger.info(TOOL_INTROS[TOOL_NAME])
+    stream_scanner = SubprocessFlagScanner(flag_pattern)
     rc, stdout, stderr, elapsed, timed_out = await async_run_command(
-        cmd, TOOL_NAME, timeout, stdin_data=b"\n"
+        cmd,
+        TOOL_NAME,
+        timeout,
+        stdin_data=b"\n",
+        stdout_observer=stream_scanner.stdout,
+        stderr_observer=stream_scanner.stderr,
     )
 
-    flags: list[str] = []
+    stream_flags = stream_scanner.findings(stdout, stderr)
+    flags = list(dict.fromkeys(
+        flag for hits in stream_flags.values() for flag in hits
+    ))
     extracted_flags: dict[str, list[str]] = {}
 
     if not timed_out:
         logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
-        flags = list(dict.fromkeys(
-            [m.group(0) for m in flag_pattern.finditer(stdout)] +
-            [m.group(0) for m in flag_pattern.finditer(stderr)]
-        ))
-
         # Attempt actual extraction with empty passphrase
         with tempfile.TemporaryDirectory(prefix="dayi_steghide_") as tmpdir:
             out_path = Path(tmpdir) / "steghide_extracted.bin"
@@ -138,6 +142,7 @@ async def run_steghide(
         elapsed_seconds=elapsed,
         timed_out=timed_out,
         extracted_flags=extracted_flags,
+        stream_flags=stream_flags,
     )
 
 
@@ -178,10 +183,6 @@ async def run_steghide_bruteforce(
     """
     cmd_template = [BINARY, "extract", "-sf", str(target), "-p", "<PASSWORD>", "-xf", "<OUTFILE>", "-f"]
 
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
-        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -193,6 +194,10 @@ async def run_steghide_bruteforce(
             f"[-] Yeğenim bu dosya {fmt_label}, steghide brute-force'u atlıyorum..."
         )
         return make_skipped_result(BF_TOOL_NAME, skip_reason, cmd_template)
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
+        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
 
     # ── Determine password source ─────────────────────────────────────────────
     using_mini_wordlist = wordlist_data is not None

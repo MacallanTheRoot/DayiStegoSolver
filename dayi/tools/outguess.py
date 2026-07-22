@@ -32,6 +32,7 @@ from dayi.extraction import (
     validate_extracted_payload,
 )
 from dayi.reporter import ToolResult
+from dayi.scanner import SubprocessFlagScanner
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -75,14 +76,6 @@ async def run_outguess(
     Returns:
         Populated ToolResult.
     """
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
-        return make_skipped_result(
-            TOOL_NAME,
-            f"{BINARY} not found on PATH (sudo apt install outguess)",
-            [BINARY],
-        )
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -94,26 +87,37 @@ async def run_outguess(
         )
         return make_skipped_result(TOOL_NAME, skip_reason, [BINARY])
 
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(
+            TOOL_NAME,
+            f"{BINARY} not found on PATH (sudo apt install outguess)",
+            [BINARY],
+        )
+
     with tempfile.TemporaryDirectory(prefix="dayi_outguess_") as tmpdir_str:
         out_path = Path(tmpdir_str) / "outguess_extracted.bin"
         # -r: retrieve (extract); outguess uses empty passphrase by default
         cmd = [BINARY, "-r", str(target), str(out_path)]
 
         logger.info(TOOL_INTROS[TOOL_NAME])
+        stream_scanner = SubprocessFlagScanner(flag_pattern)
         rc, stdout, stderr, elapsed, timed_out = await async_run_command(
-            cmd, TOOL_NAME, timeout
+            cmd,
+            TOOL_NAME,
+            timeout,
+            stdout_observer=stream_scanner.stdout,
+            stderr_observer=stream_scanner.stderr,
         )
 
-        flags: list[str] = []
+        stream_flags = stream_scanner.findings(stdout, stderr)
+        flags = list(dict.fromkeys(
+            flag for hits in stream_flags.values() for flag in hits
+        ))
         extracted_flags: dict[str, list[str]] = {}
         extraction_succeeded = False
 
         if not timed_out:
-            flags = list(dict.fromkeys(
-                [m.group(0) for m in flag_pattern.finditer(stdout)] +
-                [m.group(0) for m in flag_pattern.finditer(stderr)]
-            ))
-
             evidence = await asyncio.to_thread(
                 validate_extracted_payload,
                 out_path,
@@ -150,6 +154,7 @@ async def run_outguess(
             elapsed_seconds=elapsed,
             timed_out=timed_out,
             extracted_flags=extracted_flags,
+            stream_flags=stream_flags,
             extraction_succeeded=extraction_succeeded,
         )
 
@@ -191,10 +196,6 @@ async def run_outguess_bruteforce(
     """
     cmd_template = [BINARY, "-k", "<PASSWORD>", "-r", str(target), "<OUTFILE>"]
 
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
-        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -204,6 +205,10 @@ async def run_outguess_bruteforce(
             f"[-] Yeğenim bu dosya {fmt_label}, outguess brute-force'u atlıyorum..."
         )
         return make_skipped_result(BF_TOOL_NAME, skip_reason, cmd_template)
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
+        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
 
     # ── Determine password source ─────────────────────────────────────────────
     using_mini_wordlist = wordlist_data is not None

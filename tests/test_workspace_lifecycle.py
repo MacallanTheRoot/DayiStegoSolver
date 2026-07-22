@@ -32,7 +32,11 @@ def _result(tool_name: str, extracted_dir: str | None = None) -> ToolResult:
 
 class WorkspaceLifecycleTests(unittest.TestCase):
     def test_binwalk_retains_caller_owned_workspace(self) -> None:
-        async def fake_command(cmd, tool_name, timeout, cwd=None, stdin_data=None):
+        async def fake_command(
+            cmd, tool_name, timeout, cwd=None, stdin_data=None, **kwargs
+        ):
+            self.assertIn("stdout_observer", kwargs)
+            self.assertIn("stderr_observer", kwargs)
             self.assertIn("-D", cmd)
             self.assertEqual(cmd[cmd.index("-D") + 1], r"^zip archive data:zip")
             output_root = Path(cmd[cmd.index("-C") + 1])

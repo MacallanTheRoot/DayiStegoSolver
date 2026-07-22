@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from dayi.reporter import ToolResult
-from dayi.scanner import scan_text
+from dayi.scanner import SubprocessFlagScanner
 from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
@@ -42,12 +42,21 @@ async def run_exiftool(
         return make_skipped_result(TOOL_NAME, f"{BINARY} not found on PATH", cmd)
 
     logger.info(TOOL_INTROS[TOOL_NAME])
-    rc, stdout, stderr, elapsed, timed_out = await async_run_command(cmd, TOOL_NAME, timeout)
+    stream_scanner = SubprocessFlagScanner(flag_pattern)
+    rc, stdout, stderr, elapsed, timed_out = await async_run_command(
+        cmd,
+        TOOL_NAME,
+        timeout,
+        stdout_observer=stream_scanner.stdout,
+        stderr_observer=stream_scanner.stderr,
+    )
 
-    flags: list[str] = []
+    stream_flags = stream_scanner.findings(stdout, stderr)
+    flags = list(dict.fromkeys(
+        flag for hits in stream_flags.values() for flag in hits
+    ))
     if not timed_out:
         logger.info(TOOL_SUCCESS_MESSAGES.get(TOOL_NAME, TOOL_SUCCESS_MESSAGES["default"]))
-        flags = list(dict.fromkeys(scan_text(stdout, flag_pattern) + scan_text(stderr, flag_pattern)))
 
     return ToolResult(
         tool_name=TOOL_NAME,
@@ -58,6 +67,7 @@ async def run_exiftool(
         flags_found=flags,
         elapsed_seconds=elapsed,
         timed_out=timed_out,
+        stream_flags=stream_flags,
     )
 
 
