@@ -75,14 +75,6 @@ async def run_steghide(
     """
     cmd = [BINARY, "info", "-p", "", str(target)]
 
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
-        return make_skipped_result(
-            TOOL_NAME,
-            f"{BINARY} not found on PATH (sudo apt install steghide)",
-            cmd,
-        )
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -95,6 +87,14 @@ async def run_steghide(
             f"steghide buna yaramaz, boşuna yormayalım aleti. Atlıyorum..."
         )
         return make_skipped_result(TOOL_NAME, skip_reason, cmd)
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(
+            TOOL_NAME,
+            f"{BINARY} not found on PATH (sudo apt install steghide)",
+            cmd,
+        )
 
     logger.info(TOOL_INTROS[TOOL_NAME])
     rc, stdout, stderr, elapsed, timed_out = await async_run_command(
@@ -178,10 +178,6 @@ async def run_steghide_bruteforce(
     """
     cmd_template = [BINARY, "extract", "-sf", str(target), "-p", "<PASSWORD>", "-xf", "<OUTFILE>", "-f"]
 
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
-        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -193,6 +189,10 @@ async def run_steghide_bruteforce(
             f"[-] Yeğenim bu dosya {fmt_label}, steghide brute-force'u atlıyorum..."
         )
         return make_skipped_result(BF_TOOL_NAME, skip_reason, cmd_template)
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
+        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
 
     # ── Determine password source ─────────────────────────────────────────────
     using_mini_wordlist = wordlist_data is not None

@@ -10,7 +10,13 @@ from pathlib import Path
 
 from dayi.reporter import ToolResult
 from dayi.scanner import scan_text
-from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
+from dayi.tools._base import (
+    FileType,
+    async_run_command,
+    get_file_type,
+    is_tool_available,
+    make_skipped_result,
+)
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
@@ -38,6 +44,13 @@ async def run_exiv2(
     """
     # -pa prints all metadata; -pt prints tag type detail
     cmd = [BINARY, "-pa", str(target)]
+
+    if get_file_type(target) == FileType.TEXT:
+        return make_skipped_result(
+            TOOL_NAME,
+            "exiv2 image metadata analysis is not applicable to UTF-8 text",
+            cmd,
+        )
 
     if not is_tool_available(BINARY):
         logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])

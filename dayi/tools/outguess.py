@@ -75,14 +75,6 @@ async def run_outguess(
     Returns:
         Populated ToolResult.
     """
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
-        return make_skipped_result(
-            TOOL_NAME,
-            f"{BINARY} not found on PATH (sudo apt install outguess)",
-            [BINARY],
-        )
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -93,6 +85,14 @@ async def run_outguess(
             f"outguess sadece JPEG'e bakar, boşuna yormayalım aleti. Atlıyorum..."
         )
         return make_skipped_result(TOOL_NAME, skip_reason, [BINARY])
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(
+            TOOL_NAME,
+            f"{BINARY} not found on PATH (sudo apt install outguess)",
+            [BINARY],
+        )
 
     with tempfile.TemporaryDirectory(prefix="dayi_outguess_") as tmpdir_str:
         out_path = Path(tmpdir_str) / "outguess_extracted.bin"
@@ -191,10 +191,6 @@ async def run_outguess_bruteforce(
     """
     cmd_template = [BINARY, "-k", "<PASSWORD>", "-r", str(target), "<OUTFILE>"]
 
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
-        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
-
     # ── Smart routing: magic-byte format guard ──────────────────────────────
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
@@ -204,6 +200,10 @@ async def run_outguess_bruteforce(
             f"[-] Yeğenim bu dosya {fmt_label}, outguess brute-force'u atlıyorum..."
         )
         return make_skipped_result(BF_TOOL_NAME, skip_reason, cmd_template)
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[BF_TOOL_NAME])
+        return make_skipped_result(BF_TOOL_NAME, f"{BINARY} not found on PATH", cmd_template)
 
     # ── Determine password source ─────────────────────────────────────────────
     using_mini_wordlist = wordlist_data is not None

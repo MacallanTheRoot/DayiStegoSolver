@@ -46,8 +46,8 @@ PIPE_OUTPUT_LIMIT: int = 10 * 1024 * 1024
 PIPE_BUFFER_LIMIT: int = 64 * 1024
 MAX_WORDLIST_LINE_CHARS: int = 1_024
 
-# Number of bytes to read for magic byte detection
-_MAGIC_READ_BYTES: int = 16
+# Bounded probe large enough for deterministic text classification after magic checks.
+_MAGIC_READ_BYTES: int = 4 * 1024
 
 # Grace period between SIGTERM and SIGKILL during zombie-process cleanup
 _KILL_GRACE_SECONDS: float = 2.0
@@ -209,7 +209,25 @@ class FileType(str, Enum):
     BMP     = "BMP"
     WAV     = "WAV"
     ZIP     = "ZIP"
+    TEXT    = "TEXT"
     UNKNOWN = "UNKNOWN"
+
+
+def _looks_like_utf8_text(data: bytes) -> bool:
+    """Classify bounded UTF-8 content without trusting the filename extension."""
+    if not data or b"\x00" in data:
+        return False
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return False
+    if not text:
+        return False
+    printable = sum(
+        character in "\n\r\t" or character.isprintable()
+        for character in text
+    )
+    return printable / len(text) >= 0.85
 
 
 def get_file_type(path: Path) -> FileType:
@@ -217,8 +235,8 @@ def get_file_type(path: Path) -> FileType:
     Identify a file's format by reading its leading magic bytes.
 
     Never relies on file extensions or MIME type headers — those are trivially
-    spoofed in CTF challenges. Reads up to 16 bytes from the file header and
-    matches against known signatures.
+    spoofed in CTF challenges. Reads a bounded prefix, checks known signatures
+    first, and then classifies strongly printable UTF-8 content.
 
     Supported signatures:
       - JPEG : FF D8 FF              (offset 0)
@@ -226,6 +244,7 @@ def get_file_type(path: Path) -> FileType:
       - BMP  : 42 4D                 (offset 0, "BM")
       - WAV  : 52 49 46 46 ... 57 41 56 45  (RIFF at 0, WAVE at 8)
       - ZIP  : 50 4B 03 04           (offset 0, PK\\x03\\x04)
+      - TEXT : valid, strongly printable UTF-8 content
 
     Args:
         path: Path to the file to inspect.
@@ -257,6 +276,9 @@ def get_file_type(path: Path) -> FileType:
     if header[:4] == b"PK\x03\x04":
         return FileType.ZIP
 
+    if _looks_like_utf8_text(header):
+        return FileType.TEXT
+
     return FileType.UNKNOWN
 
 
@@ -268,7 +290,8 @@ def describe_file_type(ft: FileType) -> str:
         FileType.BMP:     "BMP",
         FileType.WAV:     "WAV",
         FileType.ZIP:     "ZIP",
-        FileType.UNKNOWN: "bilinmeyen formatta",
+        FileType.TEXT:    "UTF-8 text",
+        FileType.UNKNOWN: "bilinmeyen",
     }
     return labels.get(ft, "bilinmeyen")
 

@@ -64,14 +64,6 @@ async def run_stegseek(
     Returns:
         Populated ToolResult.
     """
-    if not is_tool_available(BINARY):
-        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
-        return make_skipped_result(
-            TOOL_NAME,
-            f"{BINARY} not found on PATH (install from GitHub: RickdeJager/stegseek)",
-            [BINARY],
-        )
-
     file_type = get_file_type(target)
     if file_type not in _SUPPORTED_FORMATS:
         fmt_label = describe_file_type(file_type)
@@ -83,6 +75,14 @@ async def run_stegseek(
             f"stegseek buna yaramaz, boşuna yormayalım aleti. Atlıyorum..."
         )
         return make_skipped_result(TOOL_NAME, skip_reason, [BINARY, str(target)])
+
+    if not is_tool_available(BINARY):
+        logger.warning(TOOL_SKIP_MESSAGES[TOOL_NAME])
+        return make_skipped_result(
+            TOOL_NAME,
+            f"{BINARY} not found on PATH (install from GitHub: RickdeJager/stegseek)",
+            [BINARY],
+        )
 
     with tempfile.TemporaryDirectory(prefix="dayi_stegseek_") as tmpdir_str:
         out_path = Path(tmpdir_str) / "stegseek_extracted"

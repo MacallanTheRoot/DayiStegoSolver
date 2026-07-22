@@ -66,6 +66,36 @@ class _StructuredTesseract:
         }
 
 
+class _SparseBandTesseract(_StructuredTesseract):
+    """Expose the synthetic flag only to the bounded wide-band OCR pass."""
+
+    def __init__(self) -> None:
+        super().__init__("")
+
+    def image_to_string(self, _image, **_kwargs):
+        return ""
+
+    def image_to_data(self, image, **kwargs):
+        self.calls += 1
+        if (
+            image.size[0] < 4000
+            or image.size[1] >= 500
+            or "--psm 11" not in kwargs.get("config", "")
+        ):
+            return {"text": [], "conf": [], "left": [], "top": [],
+                    "width": [], "height": []}
+        # Sparse OCR engines can return a slanted line in vertical rather than
+        # horizontal order. The runtime sorts this one-line crop by x.
+        return {
+            "text": ["_gordun}", "ae", "nasil", "siberV", "atan{ben!."],
+            "conf": ["81", "20", "78", "75", "72"],
+            "left": [2300, 400, 2000, 1100, 1450],
+            "top": [80, 200, 110, 190, 150],
+            "width": [500, 100, 300, 320, 500],
+            "height": [50, 30, 40, 45, 50],
+        }
+
+
 def _png(marker: bytes = b"") -> bytes:
     return b"\x89PNG\r\n\x1a\n" + marker
 
@@ -216,6 +246,42 @@ class AdvancedOCRTests(unittest.TestCase):
                 ))
         self.assertLessEqual(engine.calls, 30)
         self.assertIn("/200", result.stdout)
+
+    @unittest.skipUnless(__import__("importlib").util.find_spec("PIL"), "Pillow unavailable")
+    def test_large_scene_uses_bounded_band_and_repairs_sparse_ocr(self) -> None:
+        from PIL import Image
+        from dayi.tools.ocr_scanner import _load_ocr_dependencies
+
+        engine = _SparseBandTesseract()
+        loaded = _load_ocr_dependencies()
+        self.assertIsNotNone(loaded)
+        dependencies = OCRDependencies(
+            loaded.image_module,
+            engine,
+            loaded.image_ops,
+            loaded.image_enhance,
+            loaded.image_filter,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "large-scene.png"
+            Image.new("RGB", (1200, 1200), "black").save(target)
+            with (
+                patch("dayi.tools.ocr_scanner._load_ocr_dependencies", return_value=dependencies),
+                patch("dayi.tools.ocr_scanner.shutil.which", return_value="/controlled/tesseract"),
+                patch("dayi.tools.ocr_scanner._probe_ocr_languages", return_value=("eng",)),
+            ):
+                result = asyncio.run(run_ocr_scanner(
+                    target,
+                    root / "workspace",
+                    re.compile(r"SiberVatan\{.*?\}"),
+                ))
+
+        self.assertEqual(result.flags_found, ["SiberVatan{beni_nasil_gordun}"])
+        finding = next(item for item in result.ocr_findings if item.flags_found)
+        self.assertIn("scale-lower-center-band-10x", finding.variant.name)
+        self.assertEqual(finding.decoder_chain, ("ocr-repair",))
+        self.assertLessEqual(engine.calls, 30)
 
     def test_json_finding_is_bounded_and_primitive_only(self) -> None:
         finding = OCRFinding(
