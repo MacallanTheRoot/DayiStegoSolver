@@ -244,6 +244,7 @@ class DayiRunner:
         self._retained_workspace: Path | None = None
         self._last_report: ScanReport | None = None
         self._mini_wordlist: list[str] = []
+        self._flag_found = False
 
     async def run_all(self) -> ScanReport:
         """Execute discovered plugins and return a complete or partial report."""
@@ -254,6 +255,7 @@ class DayiRunner:
         self._successful_phases.clear()
         self._announced_artifacts.clear()
         self._mini_wordlist.clear()
+        self._flag_found = False
         self._retained_workspace = None
         self._last_report = None
         try:
@@ -267,32 +269,35 @@ class DayiRunner:
 
         try:
             await self._run_concurrent_phase()
-            self._mini_wordlist = self._build_dynamic_mini_wordlist()
-            await self._run_archive_phase(self._mini_wordlist)
-            mini_succeeded = await self._run_mini_wordlist_phase(
-                self._mini_wordlist
-            )
+            if not self._flag_found:
+                self._mini_wordlist = self._build_dynamic_mini_wordlist()
+                await self._run_archive_phase(self._mini_wordlist)
+            if not self._flag_found:
+                mini_succeeded = await self._run_mini_wordlist_phase(
+                    self._mini_wordlist
+                )
 
-            if mini_succeeded:
-                main_phases = {
-                    PluginPhase.MAIN_PRIMARY,
-                    PluginPhase.MAIN_FALLBACK,
-                    PluginPhase.MAIN_FINAL,
-                }
-                redundant_plugins = tuple(
-                    plugin.plugin_id
-                    for plugin in self.registry.plugins
-                    if plugin.phase in main_phases
-                    and PluginPhase.MINI_BRUTE_FORCE
-                    in plugin.skip_if_phase_succeeded
-                )
-                logger.info(
-                    "[runner] 🏆 Mini-wordlist şifreyi buldu! "
-                    "Registry'de mini başarıdan sonra gereksiz ilan edilen "
-                    f"eklentiler çalıştırılmayacak: {', '.join(redundant_plugins) or 'yok'}. "
-                    "Bağımsız ana faz eklentilerini yine değerlendiriyorum yeğenim."
-                )
-            await self._run_main_wordlist_phase()
+                if mini_succeeded and not self._flag_found:
+                    main_phases = {
+                        PluginPhase.MAIN_PRIMARY,
+                        PluginPhase.MAIN_FALLBACK,
+                        PluginPhase.MAIN_FINAL,
+                    }
+                    redundant_plugins = tuple(
+                        plugin.plugin_id
+                        for plugin in self.registry.plugins
+                        if plugin.phase in main_phases
+                        and PluginPhase.MINI_BRUTE_FORCE
+                        in plugin.skip_if_phase_succeeded
+                    )
+                    logger.info(
+                        "[runner] 🏆 Mini-wordlist şifreyi buldu! "
+                        "Registry'de mini başarıdan sonra gereksiz ilan edilen "
+                        f"eklentiler çalıştırılmayacak: {', '.join(redundant_plugins) or 'yok'}. "
+                        "Bağımsız ana faz eklentilerini yine değerlendiriyorum yeğenim."
+                    )
+            if not self._flag_found:
+                await self._run_main_wordlist_phase()
 
         except asyncio.CancelledError:
             cancelled = True
@@ -446,33 +451,61 @@ class DayiRunner:
             PluginPhase.CONCURRENT.name,
             tuple(plugin.plugin_id for plugin in plugins),
         )
+        tasks: dict[asyncio.Task[ToolResult], ToolPlugin] = {}
+        cancelled_children: set[asyncio.Task[ToolResult]] = set()
+
+        async def cancel_children() -> None:
+            for task in tasks:
+                if not task.done() and task not in cancelled_children:
+                    task.cancel()
+                    cancelled_children.add(task)
+            # A caller may cancel the scan while an early-stop child is cleaning
+            # up. Shield its cleanup from a second cancellation in that case.
+            await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+
         try:
-            gathered = await asyncio.gather(
-                *(
-                    self._execute_plugin(
-                        plugin,
-                        self._make_context((), plugin.plugin_id),
-                    )
-                    for plugin in plugins
-                ),
-                return_exceptions=True,
-            )
-            for plugin, item in zip(plugins, gathered, strict=True):
-                if isinstance(item, BaseException):
-                    if isinstance(item, asyncio.CancelledError):
-                        raise item
-                    logger.error(
-                        f"[runner] '{plugin.plugin_id}' eklentisi çöktü: {item}"
-                    )
-                    result = self._error_result(plugin.plugin_id, item)
-                else:
-                    result = item
-                self._record_result(plugin, result)
+            for plugin in plugins:
+                context = self._make_context((), plugin.plugin_id)
+                task = asyncio.create_task(self._execute_plugin(plugin, context))
+                tasks[task] = plugin
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                # Also keep tasks that finished just after wait returned.
+                done.update(task for task in pending if task.done())
+                pending.difference_update(done)
+                # Dict insertion order follows the registry's priority/ID order.
+                for task, plugin in tasks.items():
+                    if task not in done:
+                        continue
+                    try:
+                        result = task.result()
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException as exc:
+                        logger.error(
+                            f"[runner] '{plugin.plugin_id}' eklentisi çöktü: {exc}"
+                        )
+                        result = self._error_result(plugin.plugin_id, exc)
+                    self._record_result(plugin, result)
+                if self._flag_found:
+                    await cancel_children()
+                    break
+        except asyncio.CancelledError:
+            await cancel_children()
+            raise
+        except BaseException:
+            await cancel_children()
+            raise
         finally:
             self._ui_call("phase_finished", PluginPhase.CONCURRENT.name)
 
     async def _run_sequential_phase(self, phase: PluginPhase) -> bool:
         """Execute one phase in deterministic priority order."""
+        if self._flag_found:
+            return phase in self._successful_phases
         plugins = self.registry.for_phase(phase)
         if not plugins:
             return False
@@ -497,6 +530,8 @@ class DayiRunner:
             for plugin, initial_reason in zip(
                 plugins, initial_reasons, strict=True
             ):
+                if self._flag_found:
+                    break
                 reason = initial_reason or self._plugin_skip_reason(plugin)
                 if reason is not None:
                     logger.debug(
@@ -558,9 +593,14 @@ class DayiRunner:
 
     async def _run_main_wordlist_phase(self) -> None:
         """Execute generic primary, fallback, and final main phases."""
-        await self._run_sequential_phase(PluginPhase.MAIN_PRIMARY)
-        await self._run_sequential_phase(PluginPhase.MAIN_FALLBACK)
-        await self._run_sequential_phase(PluginPhase.MAIN_FINAL)
+        for phase in (
+            PluginPhase.MAIN_PRIMARY,
+            PluginPhase.MAIN_FALLBACK,
+            PluginPhase.MAIN_FINAL,
+        ):
+            if self._flag_found:
+                break
+            await self._run_sequential_phase(phase)
 
     def _plugin_skip_reason(self, plugin: ToolPlugin) -> str | None:
         if plugin.requires_wordlist and self.wordlist is None:
@@ -697,6 +737,7 @@ class DayiRunner:
         result = await self._wrap_notify(coro, plugin_id)
         self._partial_results.append(result)
         self._results_by_plugin[plugin_id] = result
+        self._flag_found |= self._result_has_confirmed_flag(result)
         return result
 
     @staticmethod
@@ -728,9 +769,14 @@ class DayiRunner:
             skip_reason=f"Unhandled plugin exception: {exc}",
         )
 
+    @staticmethod
+    def _result_has_confirmed_flag(result: ToolResult) -> bool:
+        return bool(result.flags_found) or any(result.extracted_flags.values())
+
     def _record_result(self, plugin: ToolPlugin, result: ToolResult) -> None:
         self._partial_results.append(result)
         self._results_by_plugin[plugin.plugin_id] = result
+        self._flag_found |= self._result_has_confirmed_flag(result)
         try:
             succeeded = bool(plugin.success_evaluator(result))
         except Exception as exc:
