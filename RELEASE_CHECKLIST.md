@@ -1,94 +1,158 @@
-# Dayı Stego Solver 4.0.0 Release Checklist
+# Dayı Stego Solver Release Checklist
 
-This checklist records verification and publication steps for the 2026-07-18
-release. Tag, asset, and GitHub Release items remain unchecked until each action
-is completed and verified.
+Reusable checklist for every release of
+https://github.com/MacallanTheRoot/DayiStegoSolver. Replace `<version>` with
+the release version (for example in `v<version>`) and `<previous>` with the
+last published version. Copy the list into the release record and check items
+there; keep this template unchecked.
 
-## Pre-release
+## Version synchronization
 
-- [ ] Confirm the intended release commit with `git rev-parse HEAD`.
-- [ ] Confirm `git status --short` is empty after release-documentation changes
-      are reviewed and committed.
-- [ ] Confirm every required GitHub Actions job, including Python 3.10–3.13,
-      completed successfully for the intended release commit.
-- [ ] Confirm `pyproject.toml`, `dayi.__version__`, CLI output, release notes,
-      changelog, and distribution metadata all report `4.0.0`.
-- [ ] Confirm the Beta classifier and Python `>=3.10` requirement remain correct.
-- [ ] Confirm the changelog records the release date as `2026-07-18`.
-- [ ] Remove release-pending wording from README and release notes at release
-      time.
-- [ ] Finalize `CHANGELOG.md` and `RELEASE_NOTES_v4.0.0.md`.
-- [ ] Review documentation and built metadata for placeholder or stale URLs.
-- [ ] Confirm the repository URL is
-      `https://github.com/MacallanTheRoot/DayiStegoSolver`.
+- [ ] `pyproject.toml` `version` and `dayi.__version__` report `<version>`.
+- [ ] `scripts/validate_distribution.py` `EXPECTED_VERSION`, the smoke-test
+      assertions in `.github/workflows/ci.yml` and the version constants in
+      `tests/` report `<version>`.
+- [ ] `CHANGELOG.md` has a `## [<version>] - YYYY-MM-DD` section without
+      release-pending wording, and its compare links read
+      `[Unreleased]: …/compare/v<version>...HEAD` and
+      `[<version>]: …/compare/v<previous>...v<version>`.
+- [ ] `RELEASE_NOTES_v<version>.md` exists and is listed in `MANIFEST.in` and
+      in the required sdist files of `scripts/validate_distribution.py`.
+- [ ] Searching the repository for the previous version string returns only
+      historical changelog and release-note entries.
+- [ ] README links to the canonical latest-release page and does not claim a
+      version is published before publication.
 
-## Verification
+## Supported Python compatibility matrix
 
-Run from the repository root:
+- [ ] Full test suite passes on every supported CPython version (currently
+      3.10, 3.11, 3.12 and 3.13); record passed, skipped and subtest counts.
+- [ ] `requires-python`, the classifiers and `dayi.MIN_SUPPORTED_PYTHON` /
+      `dayi.MAX_SUPPORTED_PYTHON` agree.
+- [ ] Any change in test or skip counts compared with the previous release is
+      explained.
 
-```bash
-python -m pip install -e '.[dev]'
-./scripts/check.sh
-python -m build
-python scripts/validate_distribution.py --dist-dir dist
-```
-
-- [ ] Confirm the full test suite, pyflakes, compileall, diff check, build, and
-      archive validator pass.
-- [ ] Confirm exactly one versioned wheel and one source distribution exist.
-- [ ] Install the wheel with `--no-deps` in a clean virtual environment and run
-      all console-script smoke checks from outside the repository checkout.
-- [ ] Repeat the clean installation and import-path check with the source
-      distribution.
-- [ ] Confirm the installed console entry point is `dayi = dayi.cli:main`.
-- [ ] Confirm the installed package imports from the clean environment's
-      `site-packages`, not the source checkout.
-- [ ] Validate isolated JSON output:
+## Static analysis
 
 ```bash
-dayi doctor --json | python -m json.tool >/dev/null
-dayi plugins list --json | python -m json.tool >/dev/null
+python -m pyflakes dayi tests scripts/validate_distribution.py
+python -m compileall -q dayi tests scripts/validate_distribution.py
+git diff --check
 ```
 
-- [ ] Confirm doctor and plugin-inspection schema versions remain 1.
-- [ ] If release checksums are generated, verify them before attaching or
-      publishing the checksum file.
+- [ ] pyflakes, compileall and `git diff --check` pass.
 
-## Tagging
+## Documentation verification
 
-Choose one tag form only after all checks pass. A signed tag requires a
-configured GPG key:
+- [ ] README (English and Turkish sections), CHANGELOG and release notes agree
+      on features, limits, supported Python versions and known limitations.
+- [ ] Documentation contract tests (`tests/test_readme_*.py`,
+      `tests/test_package_metadata.py`) pass.
+- [ ] No placeholder, stale or private URLs in documentation or built metadata.
+- [ ] No unverified benchmark, safety or detection claims.
+
+## Repository hygiene
+
+- [ ] `git status --short` is clean after the reviewed release commit.
+- [ ] Only reviewed files were staged, by explicit path.
+- [ ] The tracked `.gitignore` is unchanged unless the change was reviewed.
+- [ ] No personal configuration, planning notes, logs or credentials are
+      tracked or packaged.
+
+## Security review
+
+- [ ] The release diff was reviewed for changes to untrusted-input parsing,
+      subprocess execution, extraction paths, regex handling and integrations.
+- [ ] Size, time, recursion and extraction limits are unchanged or the change
+      is documented.
+- [ ] Known residual risks are listed in the release notes.
+
+## Remote CI verification
+
+- [ ] Every required GitHub Actions job (tests on all supported Python versions
+      and the build and smoke job) succeeded for the exact release commit.
+- [ ] After merging, CI on the default branch succeeded for the merged commit.
+
+## Clean source checkout
+
+- [ ] Artifacts are built from a clean checkout or worktree of the exact
+      merged commit that will be tagged, not from a development working tree.
+- [ ] `git rev-parse HEAD` in that checkout matches the intended release
+      commit.
+
+## Wheel and sdist build
 
 ```bash
-git tag -s v4.0.0 -m "Dayı Stego Solver 4.0.0"
-git push origin v4.0.0
+python -m build --outdir <dist-dir>
 ```
 
-Unsigned annotated alternative:
+- [ ] Exactly one wheel and one source distribution named for `<version>`.
+
+## Distribution validation
 
 ```bash
-git tag -a v4.0.0 -m "Dayı Stego Solver 4.0.0"
-git push origin v4.0.0
+python scripts/validate_distribution.py --dist-dir <dist-dir>
 ```
 
-- [ ] Verify the chosen tag points to the intended release commit before push.
-- [ ] Do not create both signed and unsigned tags with the same name.
+- [ ] The validator passes for both archives.
+- [ ] Archives contain the license and documentation files and no private
+      development files or credentials.
 
-## GitHub release
+## Clean-install smoke tests
 
-- [ ] Target tag: `v4.0.0`.
-- [ ] Release title: `Dayı Stego Solver 4.0.0`.
-- [ ] Paste the finalized release notes.
-- [ ] Attach the wheel and source distribution from successful CI.
-- [ ] Attach and verify checksums if they were generated.
-- [ ] Decide explicitly whether to mark the GitHub release as a prerelease.
-      The package's Beta classifier does not require GitHub prerelease status.
-- [ ] Verify asset names, metadata, and download availability before announcing.
+- [ ] Install the wheel with `--no-deps` into a fresh virtual environment and,
+      from a directory outside the checkout, run `dayi --version`,
+      `dayi --help`, `dayi doctor --json` and `dayi plugins list --json`.
+- [ ] Repeat with the source distribution.
+- [ ] The package imports from the environment's `site-packages`, the entry
+      point is `dayi = dayi.cli:main` and there are no mandatory runtime
+      dependencies.
+- [ ] Doctor and plugin-inspection JSON report `schema_version` 1 and the
+      expected plugin count.
 
-## Post-release
+## SHA-256 checksums
 
-- [ ] Install and smoke-test the published release asset in a clean environment.
-- [ ] Verify all release assets and any published checksums.
-- [ ] Move subsequent changes into `[Unreleased]` in `CHANGELOG.md`.
-- [ ] Open the next development section when its version is known.
-- [ ] Monitor the issue tracker for installation and regression reports.
+```bash
+cd <dist-dir>
+sha256sum dayi_stego_solver-<version>-py3-none-any.whl \
+  dayi_stego_solver-<version>.tar.gz > SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+- [ ] `SHA256SUMS` is generated from the final artifacts and verifies.
+
+## Annotated or signed tag
+
+Choose one form. A signed tag requires a configured signing key:
+
+```bash
+git tag -s v<version> -m "Dayı Stego Solver <version>"
+git tag -a v<version> -m "Dayı Stego Solver <version>"
+```
+
+- [ ] No local or remote tag `v<version>` exists before tagging; never move or
+      delete a published tag.
+- [ ] `git rev-parse v<version>^{commit}` equals the commit the artifacts were
+      built from, before and after `git push origin v<version>`.
+
+## GitHub Release publication
+
+- [ ] Create the release as a draft for tag `v<version>` with the finalized
+      release notes.
+- [ ] Attach the wheel, the source distribution and `SHA256SUMS`.
+- [ ] Inspect the draft title, notes, target tag and asset names and sizes.
+- [ ] Decide explicitly whether the release is a prerelease; the Beta
+      classifier does not require GitHub prerelease status.
+- [ ] Publish the draft.
+
+## Post-publication verification
+
+- [ ] The release is published, not a draft, and shown as the latest release
+      when intended.
+- [ ] The tag on GitHub points to the intended commit.
+- [ ] Download the published assets into an empty directory and verify them
+      with `sha256sum -c SHA256SUMS`.
+- [ ] Install the downloaded wheel in a clean environment and run the smoke
+      checks.
+- [ ] Open the next `[Unreleased]` work in `CHANGELOG.md` and monitor the issue
+      tracker for installation and regression reports.

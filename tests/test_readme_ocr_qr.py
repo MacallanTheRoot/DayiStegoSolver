@@ -55,11 +55,21 @@ class OCRQRDocumentationTests(unittest.TestCase):
             rf"\b{concurrent_count}\s+(?:concurrent aşama işlemi|concurrent plugin)\b",
         )
 
-    def test_release_candidate_status_and_version_are_current(self) -> None:
-        self.assertIn("## [4.5.1] - 2026-07-20", self.changelog)
-        self.assertIn("Tagging and publication remain", self.changelog)
+    def test_release_status_and_version_are_current(self) -> None:
+        self.assertIn("## [4.5.2] - 2026-11-26", self.changelog)
+        release = self.changelog.split("## [4.5.2]", 1)[1].split("## [4.5.1]", 1)[0]
+        self.assertNotIn("release candidate", release.lower())
+        self.assertNotIn("Tagging and publication remain", release)
+        self.assertIn(
+            "[4.5.2]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.1...v4.5.2",
+            self.changelog,
+        )
+        self.assertIn(
+            "[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.2...HEAD",
+            self.changelog,
+        )
         self.assertEqual(
-            Path("dayi/__init__.py").read_text(encoding="utf-8").count('4.5.1'),
+            Path("dayi/__init__.py").read_text(encoding="utf-8").count('4.5.2'),
             1,
         )
 

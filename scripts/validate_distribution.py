@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable, Sequence
 
 EXPECTED_NAME = "dayi-stego-solver"
-EXPECTED_VERSION = "4.5.1"
+EXPECTED_VERSION = "4.5.2"
 EXPECTED_AUTHOR = "MacallanTheRoot"
 EXPECTED_REQUIRES_PYTHON = "<3.14,>=3.10"
 EXPECTED_ENTRY_POINT = "dayi = dayi.cli:main"
@@ -41,6 +41,7 @@ SDIST_REQUIRED = {
     "RELEASE_NOTES_v4.0.0.md",
     "RELEASE_NOTES_v4.5.0.md",
     "RELEASE_NOTES_v4.5.1.md",
+    "RELEASE_NOTES_v4.5.2.md",
     "pyproject.toml",
     "scripts/check.sh",
     "scripts/run_private_regression.py",

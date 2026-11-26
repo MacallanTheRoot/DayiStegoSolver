@@ -14,7 +14,7 @@
 
 **English** · [Türkçe](#-türkçe-dokümantasyon)
 
-[Latest release](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.5.1) ·
+[Latest release](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/latest) ·
 [Installation](#installation) ·
 [Quick start](#quick-start) ·
 [Supported analysis](#what-it-analyzes) ·
@@ -148,7 +148,7 @@ dayi plugins list
 
 ### Registered pipeline
 
-Dayı 4.5.1 ships with:
+Dayı 4.5.2 ships with:
 
 - **22 registered plugins**
 - **12 concurrent-phase operations**
@@ -309,7 +309,10 @@ secrets are not added to TXT, JSON, or Markdown reports.
 
 ## Release status
 
-**Latest stable release: [v4.5.1](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.5.1)**
+**Latest published release: [GitHub Releases](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/latest)**
+
+Version in this source tree: 4.5.2 (see [CHANGELOG.md](CHANGELOG.md) and
+[RELEASE_NOTES_v4.5.2.md](RELEASE_NOTES_v4.5.2.md)).
 
 - Python: 3.10–3.13
 - CI: passing across all supported Python versions
@@ -492,7 +495,7 @@ dayi plugins list
 
 ### Kayıtlı pipeline
 
-Dayı 4.5.1:
+Dayı 4.5.2:
 
 - **22 kayıtlı plugin**
 - **12 CONCURRENT aşama işlemi**
@@ -633,7 +636,10 @@ veya Markdown raporlarına eklenmez.
 
 ## Sürüm durumu
 
-**Son kararlı sürüm: [v4.5.1](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.5.1)**
+**Son yayımlanan sürüm: [GitHub Releases](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/latest)**
+
+Bu kaynak ağacındaki sürüm: 4.5.2 (bkz. [CHANGELOG.md](CHANGELOG.md) ve
+[RELEASE_NOTES_v4.5.2.md](RELEASE_NOTES_v4.5.2.md)).
 
 - Python: 3.10–3.13
 - CI: desteklenen tüm Python sürümlerinde başarılı

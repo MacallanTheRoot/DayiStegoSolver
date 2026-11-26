@@ -231,5 +231,73 @@ assert len(registry.plugins) == 22
         self.assertIn("````text", rendered)
 
 
+class UserRegexGuardTests(unittest.TestCase):
+    """Compile-only checks; no test here runs a pattern against input."""
+
+    def test_rejects_nested_variable_repetition(self) -> None:
+        for pattern in (
+            r"(a{1,})+b",
+            r"(?:a{1,40}){1,40}b",
+            r"(a{2,}|b)*c",
+            r"((a+))+b",
+            r"((a|aa))+b",
+            r"(a?){25}a{25}",
+            r"(?:a{0,1}){30}b",
+            r"CTF\{(?:\w{1,}_?){2,}\}",
+            r"(?:\w{1,}_){3}",
+            r"(?:-?\d){9}",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertIsNone(compile_pattern(pattern))
+
+    def test_existing_rejections_remain(self) -> None:
+        for pattern in (
+            r"(a+)+$",
+            r"(a|a)*b",
+            r"(a)\1",
+            r"CTF(?=\{)",
+            r"(?<!x)CTF",
+            "x" * 513,
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertIsNone(compile_pattern(pattern))
+
+    def test_legitimate_flag_patterns_remain_supported(self) -> None:
+        for pattern in (
+            "x",
+            "FLAG",
+            r"CTF\{.*?\}",
+            r"SiberVatan\{.*?\}",
+            r"HTB\{[^}]+\}",
+            r"CUSTOM\{[^}]+\}",
+            r"picoCTF\{[A-Za-z0-9_]+\}",
+            r"flag\{[0-9a-f]{32}\}",
+            r"(?:CTF|FLAG)\{[^}]{1,64}\}",
+            r"(?i)ctf\{[^}]+\}",
+            r"CTF\{(?:[0-9a-f]{2}){16}\}",
+            r"(?:ab){2,8}",
+            r"(a{2})+b",
+            r"(?:\d{1,3}\.){3}\d{1,3}",
+            r"flag\{(?:[a-z]{3,5}_){3}\}",
+            r"(?:-?\d){4}",
+            r"(?:-?\d){8}",
+            r"(?:CTF|FLAG)?\{[^}]+\}",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertIsNotNone(compile_pattern(pattern))
+
+    def test_invalid_pattern_still_reports_invalid(self) -> None:
+        self.assertIsNone(compile_pattern("("))
+
+    def test_oversized_repeat_count_is_rejected_without_raising(self) -> None:
+        for pattern in (
+            r"a{4294967295}",
+            r"a{99999999999}",
+            r"(?:ab){99999999999}",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertIsNone(compile_pattern(pattern))
+
+
 if __name__ == "__main__":
     unittest.main()
