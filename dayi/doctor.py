@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from dayi import MIN_SUPPORTED_PYTHON, __version__
+from dayi import MAX_SUPPORTED_PYTHON, MIN_SUPPORTED_PYTHON, __version__
 from dayi.ctfshit_resolver import resolve_writeup_exporter
 from dayi.integrations import inspect_native_notification_configuration
 
@@ -756,7 +756,11 @@ def diagnose_core(
 ) -> CoreDiagnostic:
     """Inspect the dependency-free runtime invariants required for scans."""
     active_version = sys.version_info if version_info is None else version_info
-    python_supported = tuple(active_version[:2]) >= MIN_SUPPORTED_PYTHON
+    python_supported = (
+        MIN_SUPPORTED_PYTHON
+        <= tuple(active_version[:2])
+        <= MAX_SUPPORTED_PYTHON
+    )
     if package_path is None:
         try:
             package_path = str(Path(__file__).resolve().parent)
@@ -866,6 +870,7 @@ def render_plain(report: DoctorReport) -> str:
             f"{report.core.python_version} — {supported}"
         ),
         f"  Minimum Python: {report.core.minimum_python}",
+        f"  Maximum Python: {'.'.join(str(item) for item in MAX_SUPPORTED_PYTHON)}",
         f"  Platform: {report.core.platform} {report.core.architecture}",
         f"  Python executable: {report.core.python_executable}",
         f"  Package: {report.core.package_path or 'unavailable'}",

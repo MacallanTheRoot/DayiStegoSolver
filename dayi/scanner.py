@@ -27,7 +27,22 @@ from dayi.text_stego import (
     MAX_DIRECT_FLAGS,
 )
 
+try:
+    from re import _parser as _regex_parser
+except ImportError:  # pragma: no cover - Python 3.10 compatibility
+    import sre_parse as _regex_parser
+
 logger = logging.getLogger("dayi")
+
+_REGEX_REPEAT_OPCODES = tuple(
+    opcode
+    for opcode in (
+        getattr(_regex_parser, name, None)
+        for name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT")
+    )
+    if opcode is not None
+)
+_REGEX_NESTED_CHOICE_LIMIT = 256
 
 _PREVIEW_LIMIT = 180
 MAX_ARTIFACT_INPUT_CHARS = 4 * 1024 * 1024
@@ -583,6 +598,69 @@ def scan_directory(directory: Path, pattern: re.Pattern) -> dict[str, list[str]]
     return results
 
 
+def _has_nested_ambiguous_repeat(flag_regex: str) -> bool:
+    """Detect nested repeats whose backtracking is not tightly bounded.
+
+    A variable-count repeat may not contain variable repeats or alternation.
+    A fixed-count repeat may contain bounded variable repeats while the
+    combined number of choices stays within ``_REGEX_NESTED_CHOICE_LIMIT``,
+    so ``(?:\\d{1,3}\\.){3}`` stays usable and ``(?:a?){30}`` is rejected.
+    This is a syntactic heuristic, not a proof that matching is linear.
+    """
+    try:
+        parsed = _regex_parser.parse(flag_regex)
+    except (re.error, OverflowError):
+        return False  # re.compile reports the syntax error.
+
+    # Unbounded repeats and alternation count as "too many choices".
+    too_many = _REGEX_NESTED_CHOICE_LIMIT + 1
+
+    def choices(items) -> int | None:
+        """Return the capped choice count of a sequence, or None if unsafe."""
+        total = 1
+        for opcode, argument in items:
+            subpatterns = []
+            if opcode in _REGEX_REPEAT_OPCODES:
+                minimum, maximum, body = argument
+                inner = choices(body)
+                if inner is None:
+                    return None
+                if minimum == maximum:
+                    current = inner ** min(minimum, 64)
+                    if minimum > 1 and current > _REGEX_NESTED_CHOICE_LIMIT:
+                        return None
+                elif maximum > 1:
+                    if inner > 1:
+                        return None
+                    current = (
+                        too_many
+                        if maximum == _regex_parser.MAXREPEAT
+                        else maximum - minimum + 1
+                    )
+                else:
+                    current = inner + 1
+            elif opcode is _regex_parser.BRANCH:
+                subpatterns = argument[1]
+                current = too_many
+            else:
+                values = argument if isinstance(argument, tuple) else (argument,)
+                subpatterns = [
+                    value for value in values
+                    if isinstance(value, _regex_parser.SubPattern)
+                ]
+                current = 1
+            for subpattern in subpatterns:
+                inner = choices(subpattern)
+                if inner is None:
+                    return None
+                if opcode is not _regex_parser.BRANCH:
+                    current *= inner
+            total = min(total * current, too_many)
+        return total
+
+    return choices(parsed) is None
+
+
 def compile_pattern(flag_regex: str) -> Optional[re.Pattern]:
     """Safely compile a user-supplied flag regex pattern."""
     unsafe_patterns = (
@@ -591,8 +669,10 @@ def compile_pattern(flag_regex: str) -> Optional[re.Pattern]:
         r"\((?:[^()\\]|\\.)*[*+](?:[^()\\]|\\.)*\)\s*[*+{]",
         r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)\s*[*+{]",
     )
-    if len(flag_regex) > MAX_FLAG_REGEX_CHARS or any(
-        re.search(unsafe, flag_regex) for unsafe in unsafe_patterns
+    if (
+        len(flag_regex) > MAX_FLAG_REGEX_CHARS
+        or any(re.search(unsafe, flag_regex) for unsafe in unsafe_patterns)
+        or _has_nested_ambiguous_repeat(flag_regex)
     ):
         logger.error(
             "[scanner] Yeğenim bu flag deseni güvenli regex sınırlarını aşıyor; "
@@ -601,7 +681,7 @@ def compile_pattern(flag_regex: str) -> Optional[re.Pattern]:
         return None
     try:
         return re.compile(flag_regex)
-    except re.error as exc:
+    except (re.error, OverflowError) as exc:
         logger.error(f"[scanner] Flag regex deseni geçersiz yeğenim: {exc}")
         return None
 

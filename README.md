@@ -311,6 +311,9 @@ secrets are not added to TXT, JSON, or Markdown reports.
 
 **Latest stable release: [v4.5.1](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.5.1)**
 
+Next release candidate: 4.5.2 (not yet published; see
+[CHANGELOG.md](CHANGELOG.md)).
+
 - Python: 3.10–3.13
 - CI: passing across all supported Python versions
 - Distribution: verified wheel and source archive
@@ -634,6 +637,9 @@ veya Markdown raporlarına eklenmez.
 ## Sürüm durumu
 
 **Son kararlı sürüm: [v4.5.1](https://github.com/MacallanTheRoot/DayiStegoSolver/releases/tag/v4.5.1)**
+
+Sıradaki sürüm adayı: 4.5.2 (henüz yayımlanmadı; bkz.
+[CHANGELOG.md](CHANGELOG.md)).
 
 - Python: 3.10–3.13
 - CI: desteklenen tüm Python sürümlerinde başarılı

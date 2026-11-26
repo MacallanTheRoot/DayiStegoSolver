@@ -56,10 +56,10 @@ class OCRQRDocumentationTests(unittest.TestCase):
         )
 
     def test_release_candidate_status_and_version_are_current(self) -> None:
-        self.assertIn("## [4.5.1] - 2026-07-20", self.changelog)
+        self.assertIn("## [4.5.2] - 2026-11-26", self.changelog)
         self.assertIn("Tagging and publication remain", self.changelog)
         self.assertEqual(
-            Path("dayi/__init__.py").read_text(encoding="utf-8").count('4.5.1'),
+            Path("dayi/__init__.py").read_text(encoding="utf-8").count('4.5.2'),
             1,
         )
 

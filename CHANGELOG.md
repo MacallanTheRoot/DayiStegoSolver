@@ -4,6 +4,86 @@ All notable changes to Dayı Stego Solver are documented here.
 
 ## [Unreleased]
 
+## [4.5.2] - 2026-11-26
+
+Patch release candidate prepared on 2026-11-26. Tagging and publication remain
+separate release steps.
+
+### Changed
+
+- The scan now stops after the first confirmed flag. Once any plugin reports a
+  flag (directly or in extracted files), still-running `CONCURRENT` plugins are
+  cancelled and cleaned up, and later archive, mini-wordlist and main-wordlist
+  phases are not started. Reports, integrations and retained workspace
+  artifacts are still produced. There is no option to disable this in 4.5.2.
+
+### Fixed
+
+- External-tool output (strings, exiftool, exiv2, binwalk, steghide, stegseek,
+  zsteg, OutGuess) is now scanned for flags incrementally while it is drained,
+  so flags beyond the retained 10 MiB output prefix are found, and flags
+  printed before a tool timeout are no longer discarded. Per-stream sources
+  are recorded in a new `stream_flags` field (TXT and JSON reports).
+- A plugin that raises a timeout error is reported as timed out instead of as
+  an unexpected plugin error.
+- QR scanning checks for supported images before selecting a backend, and
+  OpenCV thread and OpenCL settings are applied in one place for QR and OCR
+  workers.
+- OCR adds a bounded, budget-reserved 10x lower-centre band variant for large
+  images, word ordering by position for that variant, whitespace-compact
+  candidates, a small `!`→`i` and punctuation→`_` repair set, and flag prefix
+  repair derived from the parsed `--flag` regex. Overlong candidate text is
+  skipped.
+- Text steganography adds case-as-bit binary ASCII, SNOW-style trailing
+  whitespace (uncompressed and a printable subset of the fixed Huffman table),
+  and 7/8-bit, bit-order, inverted-mapping and offset variants of whitespace
+  binary, with a strict printable filter and at most 32 candidates per stream.
+- File-type detection reads a 4 KiB prefix (was 16 bytes) and classifies
+  strongly printable UTF-8 as text; exiv2 skips text files. Image-only tools
+  check the file format before checking whether their binary is installed.
+- `dayi doctor` now reports Python 3.14 and newer as unsupported, matching the
+  declared `>=3.10,<3.14` range, and the text output adds a
+  `Maximum Python: 3.13` line. Previously only the lower bound was checked.
+
+### Security
+
+- User `--flag` patterns are additionally checked on the parsed regex tree.
+  A variable-count repeat (`+`, `*`, `?`, `{m,}`, `{m,n}`) or an alternation
+  nested inside a variable-count repeat is rejected, and so is a fixed-count
+  repeat whose nested bounded choices multiply past 256. This closes bypasses
+  of the earlier text-based check such as `(a{1,})+b`,
+  `(?:a{1,40}){1,40}b`, `((a+))+b` and `(?:a?){30}b`, which showed
+  exponential matching time. Patterns such as `(?:\d{1,3}\.){3}\d{1,3}` and
+  `(?:[0-9a-f]{2}){16}` are still accepted.
+- A `--flag` pattern with an oversized repeat count (for example
+  `a{99999999999}`) is now reported with the invalid-pattern error instead of
+  an unhandled `OverflowError` traceback.
+
+### Compatibility
+
+- Fewer plugin results can appear in a report once a flag is found; plugins
+  cancelled or never started by the early stop are absent from the report.
+  Multi-flag or multi-stage challenges may need a re-run with a narrower
+  target or a different `--flag`.
+- Some previously accepted `--flag` patterns are now rejected with the
+  existing invalid-pattern error (exit code 1).
+- On Python 3.14+ (only reachable from a source checkout, since installation
+  is blocked by `requires-python`), `dayi doctor` now exits 1 instead of 0.
+  The doctor JSON schema (`schema_version` 1) is unchanged.
+- The JSON report gains an additive per-tool `stream_flags` object.
+- Python support remains CPython 3.10 through 3.13. The core still has no
+  mandatory runtime dependencies. The registry remains at 22 plugins, including
+  12 operations in the `CONCURRENT` phase.
+
+### Known limitations
+
+- The regex check is syntactic. It rejects the common exponential shapes but
+  cannot rule out every super-linear pattern (for example several adjacent
+  unbounded repeats). Matching still runs in-process and cannot be interrupted
+  by `--timeout`.
+- Background thread work (binwalk post-processing, QR and OCR decoding) is not
+  interruptible, so early stop and Ctrl+C may wait for it to finish.
+
 ## [4.5.1] - 2026-07-20
 
 Patch release candidate prepared on 2026-07-20. Tagging and publication remain
@@ -266,6 +346,7 @@ These measures reduce exposure to hostile CTF inputs; they are not a guarantee
 that every file, parser, optional dependency, or external executable is safe.
 
 [Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.1...HEAD
+[4.5.2]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.1...HEAD
 [4.5.1]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.1.0...v4.5.0
 [4.1.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.0.0...v4.1.0

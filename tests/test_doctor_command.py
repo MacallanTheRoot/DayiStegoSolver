@@ -176,6 +176,30 @@ class CoreDiagnosticTests(unittest.TestCase):
         self.assertFalse(unsupported.python_supported)
         self.assertEqual(missing_version.status, "unhealthy")
 
+    def test_python_support_matches_declared_range_at_both_bounds(self) -> None:
+        for version_info, supported in (
+            ((3, 9, 18), False),
+            ((3, 10, 0), True),
+            ((3, 11, 9), True),
+            ((3, 12, 4), True),
+            ((3, 13, 0), True),
+            ((3, 13, 99), True),
+            ((3, 14, 0), False),
+            ((3, 15, 0), False),
+            ((4, 0, 0), False),
+        ):
+            with self.subTest(version_info=version_info):
+                result = diagnose_core(
+                    version_info=version_info,
+                    package_path="/package/dayi",
+                    cli_operational=True,
+                )
+                self.assertIs(result.python_supported, supported)
+                self.assertEqual(
+                    result.status, "healthy" if supported else "unhealthy"
+                )
+                self.assertEqual(result.minimum_python, "3.10")
+
 
 class ExternalExecutableTests(unittest.TestCase):
     definition = ExternalToolDefinition(
@@ -353,6 +377,8 @@ class StatusAndRenderingTests(unittest.TestCase):
         self.assertIn("Core", plain)
         self.assertIn("External tools", plain)
         self.assertIn("Python capabilities", plain)
+        self.assertIn("  Minimum Python: 3.10\n  Maximum Python: 3.13\n", plain)
+        self.assertNotIn("maximum_python", payload["core"])
         self.assertLess(plain.index("External tools"), plain.index("Python capabilities"))
         self.assertNotIn("CTFD_TOKEN", plain)
         self.assertEqual(payload["schema_version"], DOCTOR_SCHEMA_VERSION)
