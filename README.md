@@ -126,6 +126,9 @@ dayi scan challenge.jpg --flag 'CTF\{.*?\}'
 # Extensionless or misleading file
 dayi scan hidden.data --flag 'SiberVatan\{.*?\}' -v
 
+# Keep scanning after the first flag (unreleased, see "Early stop and full scan")
+dayi scan challenge.png --full-scan
+
 # Health and plugin diagnostics
 dayi doctor
 dayi plugins list
@@ -304,6 +307,43 @@ fragments are rejected, redirects are blocked, requests use bounded timeouts,
 and CTFd response reads are bounded. `dayi doctor` validates local configuration
 only; it does not test endpoints, credentials, or reachability. Notification
 secrets are not added to TXT, JSON, or Markdown reports.
+
+### Early stop and full scan
+
+By default the scan stops after the first confirmed flag: still-running
+concurrent plugins are cancelled and later archive, mini-wordlist and
+main-wordlist phases are not started. This keeps the common single-flag case
+fast.
+
+`--full-scan` turns off only that flag-triggered stop. It is useful when a
+challenge hides several flags, when the first hit may be a decoy, or when you
+want every eligible plugin's output for deeper analysis. It was added after
+the v4.5.2 release and is not available in published v4.5.2 packages.
+
+```bash
+dayi scan challenge.png --full-scan
+```
+
+Everything else stays in force: plugins still skip when they need a missing
+`--wordlist` or an empty mini-wordlist, declared skip-after-success rules still
+apply, unsupported formats and missing optional dependencies still produce
+skipped results, and per-plugin timeouts, extraction limits and output limits
+are unchanged. A full scan can take considerably longer because later phases,
+including wordlist brute force, also run. Flags are still de-duplicated and
+attributed to every tool that found them. With CTFd or Discord configured,
+each distinct flag is dispatched at most once, so a full scan can submit more
+than one flag (including decoys) where the default scan would have stopped.
+Automatic CTFd submission continues after CTFd accepts a flag as correct, and
+each rejected decoy is a wrong submission that, depending on the CTF's rules,
+can use up a limited number of attempts or incur penalties. Do not combine
+`--full-scan` with automatic CTFd submission (`--ctfd-url` or `DAYI_CTFD_URL`)
+on challenges with limited attempts.
+
+A full scan that reaches the end of the pipeline reports
+`scan_status: completed` and never lists `*_early_stop` reasons. `completed`
+means every eligible plugin was evaluated under the existing limits; it does
+not guarantee that every hidden flag was found. Ctrl+C and fatal errors are
+still reported as `cancelled` and `failed`.
 
 ### Scan status
 
@@ -515,6 +555,9 @@ dayi scan challenge.jpg --flag 'CTF\{.*?\}'
 # Uzantısız veya yanıltıcı uzantılı dosya
 dayi scan hidden.data --flag 'SiberVatan\{.*?\}' -v
 
+# İlk flag'den sonra taramaya devam et (yayımlanmadı, bkz. "Erken durma ve tam tarama")
+dayi scan challenge.png --full-scan
+
 # Sağlık ve plugin kontrolleri
 dayi doctor
 dayi plugins list
@@ -673,6 +716,42 @@ reddedilir; redirect engellenir, istek timeout'ları ve CTFd cevap okumaları
 sınırlıdır. `dayi doctor` yalnızca yerel yapılandırmayı doğrular; endpoint,
 credential veya erişilebilirlik testi yapmaz. Bildirim secret'ları TXT, JSON
 veya Markdown raporlarına eklenmez.
+
+### Erken durma ve tam tarama
+
+Varsayılan olarak tarama ilk doğrulanmış flag'den sonra durur: hâlâ çalışan
+concurrent eklentiler iptal edilir; sonraki arşiv, mini-wordlist ve ana
+wordlist fazları başlatılmaz. Böylece tek flag'li yaygın durum hızlı kalır.
+
+`--full-scan` yalnızca flag kaynaklı bu durmayı kapatır. Challenge birden fazla
+flag sakladığında, ilk eşleşme bir yem olabileceğinde veya daha derin analiz
+için uygun her eklentinin çıktısını görmek istediğinizde işe yarar. Bu seçenek
+v4.5.2 sürümünden sonra eklendi ve yayımlanmış v4.5.2 paketlerinde bulunmaz.
+
+```bash
+dayi scan challenge.png --full-scan
+```
+
+Diğer her şey geçerli kalır: eksik `--wordlist` veya boş mini-wordlist isteyen
+eklentiler yine atlanır, tanımlı başarı sonrası atlama kuralları uygulanır,
+desteklenmeyen formatlar ve eksik optional bağımlılıklar yine atlandı sonucu
+üretir; eklenti başına timeout, çıkarma ve çıktı sınırları değişmez. Sonraki
+fazlar, wordlist brute force dahil, de çalıştığı için tam tarama belirgin
+biçimde uzun sürebilir. Flag'ler yine tekilleştirilir ve onları bulan her araca
+atfedilir. CTFd veya Discord yapılandırılmışsa bulunan her farklı flag en
+fazla bir kez gönderilir; bu yüzden tam tarama, varsayılan taramanın duracağı
+yerde birden fazla flag (yemler dahil) gönderebilir. Otomatik CTFd gönderimi,
+CTFd bir flag'i doğru kabul ettikten sonra da sürer; reddedilen her yem flag
+yanlış bir gönderimdir ve CTF kurallarına göre sınırlı deneme hakkını
+tüketebilir veya ceza getirebilir. Deneme hakkı sınırlı challenge'larda
+`--full-scan` seçeneğini otomatik CTFd gönderimiyle (`--ctfd-url` veya
+`DAYI_CTFD_URL`) birlikte kullanmayın.
+
+Analiz hattının sonuna ulaşan tam tarama `scan_status: completed` raporlar ve
+hiçbir zaman `*_early_stop` nedeni listelemez. `completed`, uygun her eklentinin
+mevcut sınırlar içinde değerlendirildiği anlamına gelir; saklı her flag'in
+bulunduğunu garanti etmez. Ctrl+C ve ölümcül hatalar yine `cancelled` ve
+`failed` olarak raporlanır.
 
 ### Tarama durumu
 

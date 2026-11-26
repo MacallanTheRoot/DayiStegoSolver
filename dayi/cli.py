@@ -198,6 +198,15 @@ def _build_scan_parent_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Güvenlik sınırlarını koruyarak ek OCR dönüş/işleme geçişlerini çalıştır",
     )
+    parser.add_argument(
+        "--full-scan",
+        action="store_true",
+        help=(
+            "Onaylı flag bulunduktan sonra durma; uygun tüm eklentileri çalıştır. "
+            "Atlama kuralları, süre ve kaynak sınırları aynen geçerlidir; "
+            "tarama daha uzun sürebilir"
+        ),
+    )
 
     # ── v2.0 Integration arguments ────────────────────────────────────────────
     integration_group = parser.add_argument_group(
@@ -477,6 +486,8 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
     logger.info(
         f"[*] Workspace üstü: {workspace_parent or 'Sistem geçici dizini'}"
     )
+    if args.full_scan:
+        logger.info("[*] Tam tarama  : Açık (flag bulununca durmayacağım)")
     if integration:
         channels = getattr(integration, "configured_channels", ())
         if not isinstance(channels, tuple):
@@ -504,6 +515,7 @@ async def _run_analysis(args: argparse.Namespace, logger) -> tuple[ScanReport | 
         include_possible_artifacts=args.verbose,
         ocr_language=args.ocr_lang,
         ocr_exhaustive=args.ocr_exhaustive,
+        full_scan=args.full_scan,
     )
 
     logger.info("[*] Tarama başlıyor... Sabret yeğenim, Dayı çalışıyor.\n")

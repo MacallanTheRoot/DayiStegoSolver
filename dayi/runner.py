@@ -217,6 +217,7 @@ class DayiRunner:
         include_possible_artifacts: bool = False,
         ocr_language: str = "eng",
         ocr_exhaustive: bool = False,
+        full_scan: bool = False,
     ) -> None:
         self.target = target
         self.pattern = pattern
@@ -233,6 +234,7 @@ class DayiRunner:
         self.include_possible_artifacts = include_possible_artifacts
         self.ocr_language = ocr_language
         self.ocr_exhaustive = ocr_exhaustive
+        self.full_scan = full_scan
 
         self._partial_results: list[ToolResult] = []
         self._results_by_plugin: dict[str, ToolResult] = {}
@@ -245,6 +247,8 @@ class DayiRunner:
         self._last_report: ScanReport | None = None
         self._mini_wordlist: list[str] = []
         self._flag_found = False
+        # Policy in effect for the current run; fixed when run_all starts.
+        self._active_full_scan = full_scan
         # Execution tracking for ScanReport.scan_status / plugins_not_run.
         # _termination: None (no run_all lifecycle), "completed", "cancelled"
         # or "failed". _plugin_states maps plugin_id to "started", "recorded"
@@ -256,6 +260,7 @@ class DayiRunner:
     async def run_all(self) -> ScanReport:
         """Execute discovered plugins and return a complete or partial report."""
         self._started_at = datetime.now(timezone.utc).isoformat()
+        self._active_full_scan = self.full_scan
         self._partial_results.clear()
         self._results_by_plugin.clear()
         self._successful_plugins.clear()
@@ -280,16 +285,16 @@ class DayiRunner:
 
         try:
             await self._run_concurrent_phase()
-            if not self._flag_found:
+            if not self._should_stop_early():
                 self._mini_wordlist = self._build_dynamic_mini_wordlist()
                 self._mini_wordlist_built = True
                 await self._run_archive_phase(self._mini_wordlist)
-            if not self._flag_found:
+            if not self._should_stop_early():
                 mini_succeeded = await self._run_mini_wordlist_phase(
                     self._mini_wordlist
                 )
 
-                if mini_succeeded and not self._flag_found:
+                if mini_succeeded and not self._should_stop_early():
                     main_phases = {
                         PluginPhase.MAIN_PRIMARY,
                         PluginPhase.MAIN_FALLBACK,
@@ -308,7 +313,7 @@ class DayiRunner:
                         f"eklentiler çalıştırılmayacak: {', '.join(redundant_plugins) or 'yok'}. "
                         "Bağımsız ana faz eklentilerini yine değerlendiriyorum yeğenim."
                     )
-            if not self._flag_found:
+            if not self._should_stop_early():
                 await self._run_main_wordlist_phase()
             self._termination = "completed"
 
@@ -521,7 +526,7 @@ class DayiRunner:
                         )
                         result = self._error_result(plugin.plugin_id, exc)
                     self._record_result(plugin, result)
-                if self._flag_found:
+                if self._should_stop_early():
                     # Record the early-stop cause now: a user cancellation
                     # arriving during child cleanup must not relabel these.
                     for task, plugin in tasks.items():
@@ -545,7 +550,7 @@ class DayiRunner:
 
     async def _run_sequential_phase(self, phase: PluginPhase) -> bool:
         """Execute one phase in deterministic priority order."""
-        if self._flag_found:
+        if self._should_stop_early():
             return phase in self._successful_phases
         plugins = self.registry.for_phase(phase)
         if not plugins:
@@ -572,7 +577,7 @@ class DayiRunner:
             for plugin, initial_reason in zip(
                 plugins, initial_reasons, strict=True
             ):
-                if self._flag_found:
+                if self._should_stop_early():
                     break
                 reason = initial_reason or self._plugin_skip_reason(plugin)
                 if reason is not None:
@@ -643,7 +648,7 @@ class DayiRunner:
             PluginPhase.MAIN_FALLBACK,
             PluginPhase.MAIN_FINAL,
         ):
-            if self._flag_found:
+            if self._should_stop_early():
                 break
             await self._run_sequential_phase(phase)
 
@@ -728,10 +733,11 @@ class DayiRunner:
             "cancelled": "user_cancel",
             "failed": "runner_failure",
         }.get(self._termination, "early_stop")
-        # After a confirmed flag the runner only cleans up, so plugins it never
-        # reached were curtailed by the early stop even if a later cancellation
-        # ends the scan. Started concurrent siblings are marked explicitly.
-        unreached_cause = "early_stop" if self._flag_found else cause
+        # Without full scan, after a confirmed flag the runner only cleans up,
+        # so plugins it never reached were curtailed by the early stop even if
+        # a later cancellation ends the scan. Started concurrent siblings are
+        # marked explicitly.
+        unreached_cause = "early_stop" if self._should_stop_early() else cause
         not_run: list[PluginNotRun] = []
         for plugin in self.registry.plugins:
             state = self._plugin_states.get(plugin.plugin_id)
@@ -756,13 +762,17 @@ class DayiRunner:
             status = self._termination
         elif any(
             item.reason.endswith("_early_stop")
-            or (self._flag_found and item.reason == "result_discarded")
+            or (self._should_stop_early() and item.reason == "result_discarded")
             for item in not_run
         ):
             status = "early_stopped"
         else:
             status = "completed"
         return status, not_run
+
+    def _should_stop_early(self) -> bool:
+        """Return whether a confirmed flag ends the pipeline (not in full scan)."""
+        return self._flag_found and not self._active_full_scan
 
     async def _execute_plugin(
         self, plugin: ToolPlugin, context: PluginContext
