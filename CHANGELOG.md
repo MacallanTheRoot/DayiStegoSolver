@@ -16,6 +16,22 @@ All notable changes to Dayı Stego Solver are documented here.
   before, the CLI writes no report file when the runner fails or is
   interrupted by a `KeyboardInterrupt` inside the pipeline. Reports
   constructed without a scan carry `null` for both fields.
+- Opt-in `--full-scan` scan option. A confirmed flag no longer cancels running
+  concurrent plugins or prevents later archive, mini-wordlist and
+  main-wordlist phases; every eligible plugin runs and additional flags and
+  artifacts are collected. Wordlist and mini-wordlist requirements,
+  skip-after-success rules, format checks, optional-dependency degradation,
+  per-plugin timeouts and extraction limits still apply, so scans can take
+  longer but are not unbounded. A full scan that reaches the end reports
+  `scan_status: completed`; user cancellation and fatal errors are still
+  reported as `cancelled` and `failed`. Configured CTFd/Discord integrations
+  dispatch each distinct flag at most once, so a full scan may submit more
+  than one flag, including after a correct one; rejected decoys can use up
+  limited CTFd attempts, so avoid combining the option with automatic CTFd
+  submission on such challenges. Without the option the scan still stops
+  after the first confirmed flag; CLI exit codes and existing report keys are
+  unchanged. `DayiRunner` gains a `full_scan=False` keyword argument; the
+  value is read once at the start of each `run_all()` call.
 
 ## [4.5.2] - 2026-11-26
 
