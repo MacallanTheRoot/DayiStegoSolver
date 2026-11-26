@@ -70,9 +70,21 @@ class ToolResult:
     qr_findings: list[QRFinding] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class PluginNotRun:
+    """A registry plugin that has no recorded ToolResult, with a reason code."""
+    plugin_id: str
+    reason: str
+
+
 @dataclass
 class ScanReport:
-    """Top-level report aggregating all tool results for a single target file."""
+    """Top-level report aggregating all tool results for a single target file.
+
+    ``scan_status`` and ``plugins_not_run`` are filled by the runner. They are
+    ``None`` on reports built without runner lifecycle tracking (for example
+    manually constructed reports), meaning "not recorded", not "complete".
+    """
     target_file: str
     flag_pattern: str
     wordlist: str | None
@@ -83,6 +95,8 @@ class ScanReport:
     all_artifacts: list[ArtifactFinding] = field(default_factory=list)
     retained_workspace: str | None = None
     flag_pattern_source: str = "user"
+    scan_status: str | None = None
+    plugins_not_run: list[PluginNotRun] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +125,31 @@ def _markdown_fence(text: str) -> str:
     """Return a code fence longer than any backtick run in untrusted text."""
     longest = max((len(match.group(0)) for match in re.finditer(r"`+", text)), default=0)
     return "`" * max(3, longest + 1)
+
+
+_SCAN_STATUS_LABELS = {
+    "completed": "analiz hattı normal şekilde bitti "
+                 "(her aracın başarılı olduğu anlamına gelmez)",
+    "early_stopped": "doğrulanmış flag sonrası kalan analiz çalıştırılmadı; "
+                     "tarama tam değil",
+    "cancelled": "tarama iptal edildi; sonuçlar kısmi olabilir",
+    "failed": "çalıştırıcı ölümcül bir hatayla durdu; sonuçlar kısmi olabilir",
+}
+
+
+def _scan_status_text(report: ScanReport) -> str:
+    """Scan termination summary; flags found are reported separately."""
+    if report.scan_status is None:
+        return "kayıtlı değil"
+    label = _SCAN_STATUS_LABELS.get(report.scan_status)
+    return f"{report.scan_status} — {label}" if label else report.scan_status
+
+
+def _plugins_not_run_lines(report: ScanReport, indent: str) -> list[str]:
+    return [
+        f"{indent}→ {item.plugin_id}: {item.reason}"
+        for item in report.plugins_not_run or ()
+    ]
 
 
 def _build_flag_attribution(tool_results: list[ToolResult]) -> dict[str, list[str]]:
@@ -270,6 +309,7 @@ def _build_notes_text(report: ScanReport) -> str:
         f"  Wordlist    : {report.wordlist or 'Belirtilmedi'}",
         f"  Başlangıç   : {report.started_at}",
         f"  Bitiş       : {report.finished_at}",
+        f"  Tarama Durumu: {_scan_status_text(report)}",
         sep,
         "",
     ]
@@ -285,6 +325,11 @@ def _build_notes_text(report: ScanReport) -> str:
         lines.append("SONRAKI AŞAMA OLABİLECEK ARTIFACT/IPUÇLARI:")
         for finding in report.all_artifacts:
             lines.append(f"  → {_format_artifact(finding)}")
+        lines.append("")
+
+    if report.plugins_not_run:
+        lines.append("ÇALIŞTIRILMAYAN EKLENTİLER:")
+        lines += _plugins_not_run_lines(report, "  ")
         lines.append("")
 
     lines.append("ARAÇ SONUÇLARI:")
@@ -371,6 +416,7 @@ def _fallback_markdown(report: ScanReport, output_path: Path) -> None:
         "**Dosya:** " + safe_target_name + "  ",
         "**Kategori:** Steganography  ",
         f"**Durum:** {'✅ Çözüldü' if solved else '❌ Çözülemedi'}  ",
+        f"**Tarama Durumu:** {_markdown_inline(_scan_status_text(report))}  ",
         f"**Flag:** {_markdown_inline(first_flag)}  ",
         "",
     ]
@@ -566,6 +612,7 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
         f"  Wordlist    : {report.wordlist or 'Belirtilmedi'}",
         f"  Başlangıç   : {report.started_at}",
         f"  Bitiş       : {report.finished_at}",
+        f"  Tarama Durumu: {_scan_status_text(report)}",
         separator,
         "",
     ]
@@ -584,6 +631,10 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
         lines += ["", "🔎  SONRAKİ AŞAMA OLABİLECEK ARTIFACT/IPUÇLARI:"]
         for finding in report.all_artifacts:
             lines.append(f"    → {_format_artifact(finding)}")
+
+    if report.plugins_not_run:
+        lines += ["", "⏭️  ÇALIŞTIRILMAYAN EKLENTİLER:"]
+        lines += _plugins_not_run_lines(report, "    ")
 
     if report.retained_workspace:
         lines += [
@@ -710,6 +761,15 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
         "flag_attribution": attribution,
         "artifacts_found":  [_artifact_to_dict(item) for item in report.all_artifacts],
         "retained_workspace": report.retained_workspace,
+        "scan_status":      report.scan_status,
+        "plugins_not_run":  (
+            None
+            if report.plugins_not_run is None
+            else [
+                {"plugin_id": item.plugin_id, "reason": item.reason}
+                for item in report.plugins_not_run
+            ]
+        ),
         "tool_results":     [_tool_to_dict(tr) for tr in report.tool_results],
     }
 
