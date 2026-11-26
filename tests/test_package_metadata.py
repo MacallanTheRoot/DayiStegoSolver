@@ -15,7 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
 REPOSITORY_URL = "https://github.com/MacallanTheRoot/DayiStegoSolver"
 VERSION = "4.5.2"
-LATEST_PUBLISHED_RELEASE = "4.5.1"
 
 
 def _load_project_metadata() -> dict:
@@ -122,15 +121,19 @@ class PackageMetadataTests(unittest.TestCase):
         self.assertTrue(release_notes.is_file())
         self.assertIn(f"# Dayı Stego Solver {VERSION}", documents[release_notes.name])
         self.assertIn(f"## [{VERSION}] - 2026-11-26", documents["CHANGELOG.md"])
-        self.assertIn("v4.0.0", documents["RELEASE_CHECKLIST.md"])
+        self.assertIn("v<version>", documents["RELEASE_CHECKLIST.md"])
+        self.assertNotRegex(documents["RELEASE_CHECKLIST.md"], r"\b\d+\.\d+\.\d+\b")
+        self.assertNotIn("- [x]", documents["RELEASE_CHECKLIST.md"].lower())
         self.assertRegex(
             documents["README.md"],
             re.compile(rf"(?i)\b(?:version\s*|v)?{re.escape(VERSION)}\b"),
         )
-        self.assertIn(
-            f"{REPOSITORY_URL}/releases/tag/v{LATEST_PUBLISHED_RELEASE}",
-            documents["README.md"],
-        )
+        self.assertIn(f"{REPOSITORY_URL}/releases/latest", documents["README.md"])
+        self.assertNotIn(f"{REPOSITORY_URL}/releases/tag/", documents["README.md"])
+        self.assertIn(f"Version in this source tree: {VERSION}", documents["README.md"])
+        self.assertIn(f"Bu kaynak ağacındaki sürüm: {VERSION}", documents["README.md"])
+        for pending in ("not yet published", "henüz yayımlanmadı", "release candidate"):
+            self.assertNotIn(pending, documents["README.md"].lower())
         for text in documents.values():
             self.assertIn(REPOSITORY_URL, text)
             self.assertNotIn("MacallanTheRoot/" + "testrepo", text)

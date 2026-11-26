@@ -1,7 +1,6 @@
 # Dayı Stego Solver 4.5.2
 
-Release candidate prepared on 2026-11-26. Tagging and publication remain
-separate release steps.
+Prepared on 2026-11-26.
 
 Dayı Stego Solver 4.5.2 is a stability patch for
 https://github.com/MacallanTheRoot/DayiStegoSolver. It ships the fixes merged
@@ -25,8 +24,8 @@ What this means for you:
 - A report may list fewer tools. Plugins that were cancelled or never started
   do not appear in it.
 - If a challenge hides more than one flag, or the first match is a decoy,
-  later findings are not collected. 4.5.2 has no option to turn the early
-  stop off.
+  later findings are not collected. 4.5.2 has no full-scan mode and no
+  option to turn the early stop off.
 
 ## Fixed
 
@@ -63,8 +62,10 @@ What this means for you:
   invalid-pattern error instead of a Python traceback.
 - This check is a heuristic. It does not make arbitrary user regexes safe:
   some super-linear patterns are still accepted, and matching runs in-process
-  without a time limit. Prefer simple patterns with a literal prefix, such as
-  `CTF\{[^}]+\}`.
+  without a time limit. Accepted examples include adjacent unbounded repeats
+  such as `\d+\d+\d+x` and optional items written out one after another
+  (`a?a?a?…aaa…`); 4.5.1 accepted them too. Prefer simple patterns with a
+  literal prefix, such as `CTF\{[^}]+\}`.
 
 ## Compatibility
 
@@ -81,6 +82,7 @@ What this means for you:
 
 ## Known limitations
 
+- No full-scan mode: the scan always stops after the first confirmed flag.
 - Thread-based work (binwalk post-processing, QR and OCR decoding) cannot be
   interrupted, so the early stop and Ctrl+C may wait for it to finish.
 - Files and outputs above the documented size limits are still skipped or

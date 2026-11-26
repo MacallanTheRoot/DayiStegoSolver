@@ -6,8 +6,7 @@ All notable changes to Dayı Stego Solver are documented here.
 
 ## [4.5.2] - 2026-11-26
 
-Patch release candidate prepared on 2026-11-26. Tagging and publication remain
-separate release steps.
+Stability patch release prepared on 2026-11-26.
 
 ### Changed
 
@@ -345,8 +344,8 @@ the production repository.
 These measures reduce exposure to hostile CTF inputs; they are not a guarantee
 that every file, parser, optional dependency, or external executable is safe.
 
-[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.1...HEAD
-[4.5.2]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.1...HEAD
+[Unreleased]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.2...HEAD
+[4.5.2]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.1...v4.5.2
 [4.5.1]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.1.0...v4.5.0
 [4.1.0]: https://github.com/MacallanTheRoot/DayiStegoSolver/compare/v4.0.0...v4.1.0
