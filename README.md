@@ -305,6 +305,48 @@ and CTFd response reads are bounded. `dayi doctor` validates local configuration
 only; it does not test endpoints, credentials, or reachability. Notification
 secrets are not added to TXT, JSON, or Markdown reports.
 
+### Scan status
+
+Finding a flag and finishing the analysis are reported separately. JSON
+reports carry two additional top-level fields; TXT and Markdown reports show
+the same information as a `Tarama Durumu` line and a list of plugins that did
+not run.
+
+`scan_status`:
+
+| Value | Meaning |
+|---|---|
+| `completed` | The pipeline reached its normal end. It does not mean every tool succeeded; a flag may or may not have been found. |
+| `early_stopped` | A confirmed flag stopped the scan and at least one plugin that would otherwise have been evaluated did not run or had its result discarded. |
+| `cancelled` | The scan task was cancelled, normally by the user pressing Ctrl+C. Results may be partial; `plugins_not_run` shows what did not run. |
+| `failed` | The runner stopped on a fatal error. Results may be partial. |
+
+If several apply, `cancelled` wins over `failed`, and both win over
+`early_stopped`. As before, the `dayi` CLI writes no report file when the
+runner re-raises anything other than task cancellation, so `failed`, and
+`cancelled` caused by a `KeyboardInterrupt` inside the pipeline, are currently
+visible only to programmatic callers of the runner.
+
+`plugins_not_run` lists, in registry order, every registered plugin without an
+entry in `tool_results`, as `{"plugin_id": ..., "reason": ...}`. Plugins that
+returned a skipped, timed-out or error result stay in `tool_results`. Entries
+use registry plugin IDs as shown by `dayi plugins list`, which can differ from
+the tool name in `tool_results`. Reasons:
+
+| Reason | Meaning |
+|---|---|
+| `wordlist_missing` | The plugin requires `--wordlist` and none was given. |
+| `mini_wordlist_missing` | The metadata-derived mini-wordlist was empty. |
+| `redundant_after_success` | A declared prerequisite phase or plugin already succeeded. |
+| `not_started_early_stop` / `cancelled_early_stop` | Not started, or started and cancelled, after a confirmed flag. |
+| `not_started_user_cancel` / `cancelled_user_cancel` | Not started, or started and cancelled, because the user cancelled the scan. |
+| `not_started_runner_failure` / `interrupted_runner_failure` | Not started, or started and not finished, because of a fatal runner error. |
+| `result_discarded` | The plugin finished, but the scan was already stopping and its result was not recorded. |
+
+A plugin that was never reached is reported with a skip reason only when that
+rule would certainly have applied; otherwise it carries the `not_started_*`
+reason. Both fields are `null` for reports that were not produced by a scan.
+
 ---
 
 ## Release status
@@ -631,6 +673,48 @@ reddedilir; redirect engellenir, istek timeout'ları ve CTFd cevap okumaları
 sınırlıdır. `dayi doctor` yalnızca yerel yapılandırmayı doğrular; endpoint,
 credential veya erişilebilirlik testi yapmaz. Bildirim secret'ları TXT, JSON
 veya Markdown raporlarına eklenmez.
+
+### Tarama durumu
+
+Flag bulunması ile analizin tamamlanması ayrı raporlanır. JSON raporlarında iki
+yeni üst seviye alan bulunur; TXT ve Markdown raporları aynı bilgiyi
+`Tarama Durumu` satırı ve çalıştırılmayan eklenti listesiyle gösterir.
+
+`scan_status`:
+
+| Değer | Anlamı |
+|---|---|
+| `completed` | Analiz hattı normal sonuna ulaştı. Her aracın başarılı olduğu anlamına gelmez; flag bulunmuş da olabilir, bulunmamış da. |
+| `early_stopped` | Doğrulanmış bir flag taramayı durdurdu ve aksi halde değerlendirilecek en az bir eklenti çalışmadı ya da sonucu kaydedilmedi. |
+| `cancelled` | Tarama görevi iptal edildi; genellikle kullanıcı Ctrl+C'ye basmıştır. Sonuçlar kısmi olabilir; `plugins_not_run` neyin çalışmadığını gösterir. |
+| `failed` | Çalıştırıcı ölümcül bir hatayla durdu. Sonuçlar kısmi olabilir. |
+
+Birden fazlası geçerliyse `cancelled`, `failed`'dan; ikisi de `early_stopped`'dan
+önceliklidir. `dayi` CLI, çalıştırıcı görev iptali dışında bir hatayı yeniden
+yükselttiğinde eskisi gibi rapor dosyası yazmaz; bu yüzden `failed` ve analiz
+hattı içindeki `KeyboardInterrupt` kaynaklı `cancelled` şu an yalnız
+çalıştırıcıyı programatik olarak kullananlara görünür.
+
+`plugins_not_run`, `tool_results` içinde kaydı olmayan her kayıtlı eklentiyi
+registry sırasıyla `{"plugin_id": ..., "reason": ...}` olarak listeler. Atlandı,
+timeout veya hata sonucu döndüren eklentiler `tool_results` içinde kalır.
+Kayıtlar `dayi plugins list` çıktısındaki registry eklenti kimliklerini
+kullanır; bunlar `tool_results` içindeki araç adından farklı olabilir.
+Nedenler:
+
+| Neden | Anlamı |
+|---|---|
+| `wordlist_missing` | Eklenti `--wordlist` ister ve verilmedi. |
+| `mini_wordlist_missing` | Metadata'dan türetilen mini-wordlist boş kaldı. |
+| `redundant_after_success` | Tanımlı ön koşul faz veya eklenti zaten başarılı oldu. |
+| `not_started_early_stop` / `cancelled_early_stop` | Doğrulanmış flag sonrası başlatılmadı ya da başladı ve iptal edildi. |
+| `not_started_user_cancel` / `cancelled_user_cancel` | Kullanıcı taramayı durdurduğu için başlatılmadı ya da başladı ve iptal edildi. |
+| `not_started_runner_failure` / `interrupted_runner_failure` | Ölümcül çalıştırıcı hatası yüzünden başlatılmadı ya da başladı ve bitmedi. |
+| `result_discarded` | Eklenti bitti, fakat tarama zaten duruyordu ve sonucu kaydedilmedi. |
+
+Hiç ulaşılmayan bir eklenti, yalnızca ilgili atlama kuralı kesin olarak
+geçerliyse atlama nedeniyle raporlanır; aksi halde `not_started_*` nedenini
+taşır. Tarama tarafından üretilmeyen raporlarda iki alan da `null` olur.
 
 ---
 

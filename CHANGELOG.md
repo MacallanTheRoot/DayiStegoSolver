@@ -4,6 +4,19 @@ All notable changes to Dayı Stego Solver are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Scan reports state how the scan ended. JSON reports gain `scan_status`
+  (`completed`, `early_stopped`, `cancelled` or `failed`) and
+  `plugins_not_run` (registered plugins without a tool result, in registry
+  order, each with a machine-readable reason such as `wordlist_missing` or
+  `not_started_early_stop`). TXT reports, the built-in Markdown writeup and the
+  notes passed to the optional writeup exporter show the same information.
+  Existing report keys, scan behaviour and exit codes are unchanged; as
+  before, the CLI writes no report file when the runner fails or is
+  interrupted by a `KeyboardInterrupt` inside the pipeline. Reports
+  constructed without a scan carry `null` for both fields.
+
 ## [4.5.2] - 2026-11-26
 
 Stability patch release prepared on 2026-11-26.

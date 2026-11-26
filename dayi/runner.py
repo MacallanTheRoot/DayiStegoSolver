@@ -15,7 +15,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from dayi.persona import PlainTerminalUI, TerminalUI, create_terminal_ui
-from dayi.reporter import ScanReport, ToolResult
+from dayi.reporter import PluginNotRun, ScanReport, ToolResult
 from dayi.scanner import (
     MAX_ARTIFACT_FINDINGS,
     ArtifactFinding,
@@ -245,6 +245,13 @@ class DayiRunner:
         self._last_report: ScanReport | None = None
         self._mini_wordlist: list[str] = []
         self._flag_found = False
+        # Execution tracking for ScanReport.scan_status / plugins_not_run.
+        # _termination: None (no run_all lifecycle), "completed", "cancelled"
+        # or "failed". _plugin_states maps plugin_id to "started", "recorded"
+        # or a reason code observed when the runner decided not to run it.
+        self._termination: str | None = None
+        self._plugin_states: dict[str, str] = {}
+        self._mini_wordlist_built = False
 
     async def run_all(self) -> ScanReport:
         """Execute discovered plugins and return a complete or partial report."""
@@ -258,9 +265,13 @@ class DayiRunner:
         self._flag_found = False
         self._retained_workspace = None
         self._last_report = None
+        self._termination = None
+        self._plugin_states.clear()
+        self._mini_wordlist_built = False
         try:
             self._workspace = _create_scan_workspace(self.workspace_parent)
         except WorkspaceConfigurationError:
+            self._termination = "failed"
             self._last_report = self._build_report()
             self._ui_call("close")
             raise
@@ -271,6 +282,7 @@ class DayiRunner:
             await self._run_concurrent_phase()
             if not self._flag_found:
                 self._mini_wordlist = self._build_dynamic_mini_wordlist()
+                self._mini_wordlist_built = True
                 await self._run_archive_phase(self._mini_wordlist)
             if not self._flag_found:
                 mini_succeeded = await self._run_mini_wordlist_phase(
@@ -298,9 +310,11 @@ class DayiRunner:
                     )
             if not self._flag_found:
                 await self._run_main_wordlist_phase()
+            self._termination = "completed"
 
         except asyncio.CancelledError:
             cancelled = True
+            self._termination = "cancelled"
             self._ui_call(
                 "show_warning",
                 "\n[!] Yeğenim acelen var galiba, durdurduk! "
@@ -309,6 +323,9 @@ class DayiRunner:
             )
         except BaseException as exc:
             fatal_error = exc
+            self._termination = (
+                "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
+            )
             logger.error(
                 f"[runner] Analiz yaşam döngüsü tökezledi yeğenim: {exc}"
             )
@@ -317,6 +334,9 @@ class DayiRunner:
                 if self.integration:
                     try:
                         await self.integration.drain()
+                    except asyncio.CancelledError:
+                        self._termination = "cancelled"
+                        raise
                     except Exception as exc:
                         logger.warning(
                             "[runner] Yeğenim bildirim kuyruğu kapanırken "
@@ -461,7 +481,18 @@ class DayiRunner:
                     cancelled_children.add(task)
             # A caller may cancel the scan while an early-stop child is cleaning
             # up. Shield its cleanup from a second cancellation in that case.
-            await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+            try:
+                await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+            finally:
+                # Children that finished on their own are not recorded on this
+                # path (existing behaviour); do not report them as cancelled.
+                for task, plugin in tasks.items():
+                    if (
+                        task.done()
+                        and not task.cancelled()
+                        and self._plugin_states.get(plugin.plugin_id) != "recorded"
+                    ):
+                        self._plugin_states[plugin.plugin_id] = "result_discarded"
 
         try:
             for plugin in plugins:
@@ -491,6 +522,16 @@ class DayiRunner:
                         result = self._error_result(plugin.plugin_id, exc)
                     self._record_result(plugin, result)
                 if self._flag_found:
+                    # Record the early-stop cause now: a user cancellation
+                    # arriving during child cleanup must not relabel these.
+                    for task, plugin in tasks.items():
+                        if not task.done():
+                            self._plugin_states[plugin.plugin_id] = (
+                                "cancelled_early_stop"
+                                if self._plugin_states.get(plugin.plugin_id)
+                                == "started"
+                                else "not_started_early_stop"
+                            )
                     await cancel_children()
                     break
         except asyncio.CancelledError:
@@ -515,6 +556,7 @@ class DayiRunner:
         if all(reason is not None for reason in initial_reasons):
             for plugin, reason in zip(plugins, initial_reasons, strict=True):
                 logger.debug(f"[runner] {plugin.plugin_id} atlandı: {reason}")
+                self._mark_skipped(plugin)
                 self._ui_call("plugin_finished", plugin.plugin_id, "skipped")
             logger.info(
                 f"[runner] {phase.name} fazında çalışacak eklenti kalmadı; "
@@ -537,6 +579,7 @@ class DayiRunner:
                     logger.debug(
                         f"[runner] {plugin.plugin_id} atlandı: {reason}"
                     )
+                    self._mark_skipped(plugin)
                     self._ui_call("plugin_finished", plugin.plugin_id, "skipped")
                     continue
                 context = self._make_context(plugin_id=plugin.plugin_id)
@@ -562,6 +605,8 @@ class DayiRunner:
                 "[runner] Metadata çıktısından aday token bulunamadı, "
                 "mini-wordlist turu atlanıyor."
             )
+            for plugin in self.registry.for_phase(PluginPhase.MINI_BRUTE_FORCE):
+                self._plugin_states[plugin.plugin_id] = "mini_wordlist_missing"
             return False
 
         logger.info(
@@ -603,10 +648,17 @@ class DayiRunner:
             await self._run_sequential_phase(phase)
 
     def _plugin_skip_reason(self, plugin: ToolPlugin) -> str | None:
+        rule = self._plugin_skip_rule(plugin)
+        return None if rule is None else rule[1]
+
+    def _plugin_skip_rule(
+        self, plugin: ToolPlugin, *, log: bool = True
+    ) -> tuple[str, str] | None:
+        """Return the (reason code, message) of the first matching skip rule."""
         if plugin.requires_wordlist and self.wordlist is None:
-            return "wordlist is required"
+            return "wordlist_missing", "wordlist is required"
         if plugin.requires_mini_wordlist and not self._mini_wordlist:
-            return "mini-wordlist is required"
+            return "mini_wordlist_missing", "mini-wordlist is required"
         successful_phase = next(
             (
                 phase
@@ -616,7 +668,10 @@ class DayiRunner:
             None,
         )
         if successful_phase is not None:
-            return f"phase {successful_phase.name} already succeeded"
+            return (
+                "redundant_after_success",
+                f"phase {successful_phase.name} already succeeded",
+            )
         successful_dependency = next(
             (
                 plugin_id
@@ -626,16 +681,93 @@ class DayiRunner:
             None,
         )
         if successful_dependency is not None:
-            logger.info(
-                f"[runner] '{successful_dependency}' başarılı oldu; "
-                f"'{plugin.plugin_id}' turunu atlıyorum yeğenim."
+            if log:
+                logger.info(
+                    f"[runner] '{successful_dependency}' başarılı oldu; "
+                    f"'{plugin.plugin_id}' turunu atlıyorum yeğenim."
+                )
+            return (
+                "redundant_after_success",
+                f"plugin {successful_dependency} already succeeded",
             )
-            return f"plugin {successful_dependency} already succeeded"
         return None
+
+    def _mark_skipped(self, plugin: ToolPlugin) -> None:
+        rule = self._plugin_skip_rule(plugin, log=False)
+        if rule is not None:
+            self._plugin_states[plugin.plugin_id] = rule[0]
+
+    def _unreached_skip_code(self, plugin: ToolPlugin) -> str | None:
+        """Return a skip code that certainly applies to a plugin never reached.
+
+        Wordlist presence is fixed and success sets only grow, so those rules
+        hold whenever the plugin would have been evaluated. Mini-wordlist rules
+        are only known once the mini-wordlist was built. CONCURRENT plugins
+        have no skip rules.
+        """
+        if plugin.phase == PluginPhase.CONCURRENT:
+            return None
+        rule = self._plugin_skip_rule(plugin, log=False)
+        code = None if rule is None else rule[0]
+        if code == "mini_wordlist_missing" and not self._mini_wordlist_built:
+            return None
+        if (
+            code is None
+            and plugin.phase == PluginPhase.MINI_BRUTE_FORCE
+            and self._mini_wordlist_built
+            and not self._mini_wordlist
+        ):
+            return "mini_wordlist_missing"
+        return code
+
+    def _execution_summary(self) -> tuple[str | None, list[PluginNotRun] | None]:
+        """Account for every registry plugin without a recorded result."""
+        if self._termination is None:
+            return None, None
+        cause = {
+            "cancelled": "user_cancel",
+            "failed": "runner_failure",
+        }.get(self._termination, "early_stop")
+        # After a confirmed flag the runner only cleans up, so plugins it never
+        # reached were curtailed by the early stop even if a later cancellation
+        # ends the scan. Started concurrent siblings are marked explicitly.
+        unreached_cause = "early_stop" if self._flag_found else cause
+        not_run: list[PluginNotRun] = []
+        for plugin in self.registry.plugins:
+            state = self._plugin_states.get(plugin.plugin_id)
+            if state == "recorded":
+                continue
+            if state == "started":
+                reason = (
+                    "interrupted_runner_failure"
+                    if cause == "runner_failure"
+                    else f"cancelled_{cause}"
+                )
+            elif state is None:
+                reason = (
+                    self._unreached_skip_code(plugin)
+                    or f"not_started_{unreached_cause}"
+                )
+            else:
+                reason = state
+            not_run.append(PluginNotRun(plugin.plugin_id, reason))
+
+        if self._termination in ("cancelled", "failed"):
+            status = self._termination
+        elif any(
+            item.reason.endswith("_early_stop")
+            or (self._flag_found and item.reason == "result_discarded")
+            for item in not_run
+        ):
+            status = "early_stopped"
+        else:
+            status = "completed"
+        return status, not_run
 
     async def _execute_plugin(
         self, plugin: ToolPlugin, context: PluginContext
     ) -> ToolResult:
+        self._plugin_states[plugin.plugin_id] = "started"
         self._ui_call("plugin_started", plugin.plugin_id)
         try:
             result = await self._wrap_notify(plugin.run(context), plugin.plugin_id)
@@ -737,6 +869,7 @@ class DayiRunner:
         result = await self._wrap_notify(coro, plugin_id)
         self._partial_results.append(result)
         self._results_by_plugin[plugin_id] = result
+        self._plugin_states[plugin_id] = "recorded"
         self._flag_found |= self._result_has_confirmed_flag(result)
         return result
 
@@ -776,6 +909,7 @@ class DayiRunner:
     def _record_result(self, plugin: ToolPlugin, result: ToolResult) -> None:
         self._partial_results.append(result)
         self._results_by_plugin[plugin.plugin_id] = result
+        self._plugin_states[plugin.plugin_id] = "recorded"
         self._flag_found |= self._result_has_confirmed_flag(result)
         try:
             succeeded = bool(plugin.success_evaluator(result))
@@ -930,6 +1064,7 @@ class DayiRunner:
         else:
             self._ui_call("show_no_flags")
 
+        scan_status, plugins_not_run = self._execution_summary()
         return ScanReport(
             target_file=str(self.target.resolve()),
             flag_pattern=self.pattern_display,
@@ -945,4 +1080,6 @@ class DayiRunner:
                 else None
             ),
             flag_pattern_source=self.pattern_source,
+            scan_status=scan_status,
+            plugins_not_run=plugins_not_run,
         )
