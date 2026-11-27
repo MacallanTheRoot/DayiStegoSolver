@@ -32,6 +32,28 @@ All notable changes to Dayı Stego Solver are documented here.
   after the first confirmed flag; CLI exit codes and existing report keys are
   unchanged. `DayiRunner` gains a `full_scan=False` keyword argument; the
   value is read once at the start of each `run_all()` call.
+- Reports show when a resource limit reduced analysis coverage. JSON reports
+  gain a top-level `analysis_limits` list of
+  `{tool, source, reason, action, limit, unit, observed, count}` entries;
+  TXT reports, the built-in Markdown writeup and the writeup-exporter notes
+  show them under `KAYNAK SINIRLARI`. Recorded limits: extracted files over
+  the 8 MiB flag-scan cap, extraction-directory file-count and byte budgets,
+  the input and finding budgets of the runner's artifact scan of tool
+  stdout/stderr, subprocess output above the
+  10 MiB retained-output limit, and text-stego source, decoded-text and
+  analysis-window truncation. Previously most of these were logged only, or
+  not at all. No limit value changed and the retained flags and artifacts
+  are the same as before; to report an artifact budget exactly, the artifact
+  scan of tool output may continue past the budget (still within the 4 Mi
+  character input cap) without keeping more findings, including when plugin
+  artifacts already filled the budget. Other artifact scans stop at the
+  budget as before. `--full-scan` still
+  applies every limit, and a limit does not change `scan_status`.
+  Report-only shortening is labelled separately in TXT and Markdown. Limits
+  that were already reported as text keep their wording, and not every limit
+  is recorded yet (see README, "Analysis limits"). `ToolResult` gains an
+  `analysis_limits` field; `scan_file`, `scan_directory`, `scan_artifacts`
+  and `async_run_command` accept an optional keyword-only `limits` list.
 
 ## [4.5.2] - 2026-11-26
 

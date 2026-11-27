@@ -35,7 +35,7 @@ from dayi import __version__
 from dayi.ctfshit_resolver import resolve_writeup_exporter
 from dayi.document.model import DocumentFinding
 from dayi.image_analysis import OCRFinding, QRFinding
-from dayi.scanner import ArtifactFinding
+from dayi.scanner import AnalysisLimit, ArtifactFinding
 
 logger = logging.getLogger("dayi")
 
@@ -68,6 +68,7 @@ class ToolResult:
     document_findings: list[DocumentFinding] = field(default_factory=list)
     ocr_findings: list[OCRFinding] = field(default_factory=list)
     qr_findings: list[QRFinding] = field(default_factory=list)
+    analysis_limits: list[AnalysisLimit] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,55 @@ def _plugins_not_run_lines(report: ScanReport, indent: str) -> list[str]:
         f"{indent}→ {item.plugin_id}: {item.reason}"
         for item in report.plugins_not_run or ()
     ]
+
+
+_LIMIT_ACTION_LABELS = {
+    "skipped": "atlandı",
+    "partial": "kısmen analiz edildi",
+    "stopped": "bütçe doldu, işlem durdu",
+}
+ANALYSIS_LIMITS_HEADING = "KAYNAK SINIRLARI (analiz kapsamı eksik):"
+ANALYSIS_LIMITS_NOTE = (
+    "Not: tarama durumundan bağımsızdır; yalnızca ölçülen sınırlar listelenir."
+)
+
+
+def _analysis_limits(report: ScanReport) -> list[tuple[str, AnalysisLimit]]:
+    """Flatten per-result events in result order, then a stable field order."""
+    return [
+        (tr.tool_name, item)
+        for tr in report.tool_results
+        for item in sorted(
+            tr.analysis_limits,
+            key=lambda e: (e.source, e.reason, e.action, e.unit, e.limit),
+        )
+    ]
+
+
+def _format_analysis_limit(tool: str, item: AnalysisLimit) -> str:
+    details = [f"sınır: {item.limit} {item.unit}"]
+    if item.observed is not None:
+        details.append(f"gözlenen: {item.observed} {item.unit}")
+    if item.count > 1:
+        details.append(f"{item.count} kez")
+    action = _LIMIT_ACTION_LABELS.get(item.action, item.action)
+    return (
+        f"{tool} / {item.source}: {item.reason} — {action} ({', '.join(details)})"
+    )
+
+
+def _analysis_limit_lines(report: ScanReport, indent: str) -> list[str]:
+    return [
+        f"{indent}→ {_format_analysis_limit(tool, item)}"
+        for tool, item in _analysis_limits(report)
+    ]
+
+
+def _display_omitted(indent: str, omitted: int, noun: str) -> list[str]:
+    """Mark report-only shortening, distinct from analysis limits."""
+    if omitted <= 0:
+        return []
+    return [f"{indent}(+{omitted} {noun} yalnızca bu rapor görünümünde gösterilmedi)"]
 
 
 def _build_flag_attribution(tool_results: list[ToolResult]) -> dict[str, list[str]]:
@@ -332,6 +382,13 @@ def _build_notes_text(report: ScanReport) -> str:
         lines += _plugins_not_run_lines(report, "  ")
         lines.append("")
 
+    limit_lines = _analysis_limit_lines(report, "  ")
+    if limit_lines:
+        lines.append(ANALYSIS_LIMITS_HEADING)
+        lines += limit_lines
+        lines.append(f"  {ANALYSIS_LIMITS_NOTE}")
+        lines.append("")
+
     lines.append("ARAÇ SONUÇLARI:")
     lines.append("")
 
@@ -360,21 +417,26 @@ def _build_notes_text(report: ScanReport) -> str:
             lines.append("    Document findings:")
             for finding in tr.document_findings[:50]:
                 lines.append(f"      {_format_document_finding(finding)}")
+            lines += _display_omitted("      ", len(tr.document_findings) - 50, "bulgu")
 
         if tr.ocr_findings:
             lines.append("    OCR findings:")
             for finding in tr.ocr_findings[:25]:
                 lines.append(f"      {_format_ocr_finding(finding)}")
+            lines += _display_omitted("      ", len(tr.ocr_findings) - 25, "bulgu")
 
         if tr.qr_findings:
             lines.append("    QR findings:")
             for finding in tr.qr_findings[:25]:
                 lines.append(f"      {_format_qr_finding(finding)}")
+            lines += _display_omitted("      ", len(tr.qr_findings) - 25, "bulgu")
 
         if tr.stdout.strip():
             lines.append("    STDOUT (özet):")
-            for out_line in _truncate(tr.stdout, 1024).splitlines()[:20]:
+            out_lines = _truncate(tr.stdout, 1024).splitlines()
+            for out_line in out_lines[:20]:
                 lines.append(f"      {out_line}")
+            lines += _display_omitted("      ", len(out_lines) - 20, "satır")
 
         lines.append("")
 
@@ -436,6 +498,13 @@ def _fallback_markdown(report: ScanReport, output_path: Path) -> None:
         for finding in report.all_artifacts:
             lines.append(f"- {_markdown_inline(_format_artifact(finding))}")
         lines.append("")
+
+    limit_entries = _analysis_limits(report)
+    if limit_entries:
+        lines.append("#### Kaynak Sınırları\n")
+        for tool, item in limit_entries:
+            lines.append(f"- {_markdown_inline(_format_analysis_limit(tool, item))}")
+        lines.append(f"\n*{_markdown_inline(ANALYSIS_LIMITS_NOTE)}*\n")
 
     notes = _build_notes_text(report)
     fence = _markdown_fence(notes)
@@ -636,6 +705,12 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
         lines += ["", "⏭️  ÇALIŞTIRILMAYAN EKLENTİLER:"]
         lines += _plugins_not_run_lines(report, "    ")
 
+    limit_lines = _analysis_limit_lines(report, "    ")
+    if limit_lines:
+        lines += ["", f"⚠️  {ANALYSIS_LIMITS_HEADING}"]
+        lines += limit_lines
+        lines.append(f"    {ANALYSIS_LIMITS_NOTE}")
+
     if report.retained_workspace:
         lines += [
             "",
@@ -680,16 +755,19 @@ def write_txt_report(report: ScanReport, output_path: Path) -> None:
                 lines.append(
                     f"    {_markdown_inline(_format_document_finding(finding))}"
                 )
+            lines += _display_omitted("    ", len(tr.document_findings) - 50, "bulgu")
 
         if tr.ocr_findings:
             lines.append("  OCR Findings:")
             for finding in tr.ocr_findings[:25]:
                 lines.append(f"    {_markdown_inline(_format_ocr_finding(finding))}")
+            lines += _display_omitted("    ", len(tr.ocr_findings) - 25, "bulgu")
 
         if tr.qr_findings:
             lines.append("  QR Findings:")
             for finding in tr.qr_findings[:25]:
                 lines.append(f"    {_markdown_inline(_format_qr_finding(finding))}")
+            lines += _display_omitted("    ", len(tr.qr_findings) - 25, "bulgu")
 
         if tr.stdout.strip():
             lines.append("  STDOUT:")
@@ -770,6 +848,19 @@ def write_json_report(report: ScanReport, output_path: Path) -> None:
                 for item in report.plugins_not_run
             ]
         ),
+        "analysis_limits":  [
+            {
+                "tool": tool,
+                "source": item.source,
+                "reason": item.reason,
+                "action": item.action,
+                "limit": item.limit,
+                "unit": item.unit,
+                "observed": item.observed,
+                "count": item.count,
+            }
+            for tool, item in _analysis_limits(report)
+        ],
         "tool_results":     [_tool_to_dict(tr) for tr in report.tool_results],
     }
 

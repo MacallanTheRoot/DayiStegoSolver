@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 from dayi.reporter import ToolResult
-from dayi.scanner import SubprocessFlagScanner, scan_file
+from dayi.scanner import AnalysisLimit, SubprocessFlagScanner, scan_file
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -99,12 +99,14 @@ async def run_stegseek(
 
         logger.info(TOOL_INTROS[TOOL_NAME])
         stream_scanner = SubprocessFlagScanner(flag_pattern)
+        limits: list[AnalysisLimit] = []
         rc, stdout, stderr, elapsed, timed_out = await async_run_command(
             cmd,
             TOOL_NAME,
             timeout,
             stdout_observer=stream_scanner.stdout,
             stderr_observer=stream_scanner.stderr,
+            limits=limits,
         )
 
         stream_flags = stream_scanner.findings(stdout, stderr)
@@ -119,7 +121,9 @@ async def run_stegseek(
             # Scan extracted output file if it was created
             if out_path.is_file() and out_path.stat().st_size > 0:
                 extraction_succeeded = True
-                hits = await asyncio.to_thread(scan_file, out_path, flag_pattern)
+                hits = await asyncio.to_thread(
+                    scan_file, out_path, flag_pattern, limits=limits
+                )
                 if hits:
                     extracted_flags["stegseek_extracted"] = hits
                     flags = list(dict.fromkeys(flags + hits))
@@ -137,6 +141,7 @@ async def run_stegseek(
             extraction_succeeded=extraction_succeeded,
             extracted_flags=extracted_flags,
             stream_flags=stream_flags,
+            analysis_limits=limits,
         )
 
 

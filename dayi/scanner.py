@@ -17,7 +17,7 @@ import math
 import os
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -53,6 +53,7 @@ MAX_SCAN_DIRECTORY_BYTES = 128 * 1024 * 1024
 MAX_FLAG_REGEX_CHARS = 512
 MAX_FLAG_MATCHES = 1_024
 MAX_BUILTIN_FLAG_CONTENT_CHARS = 256
+MAX_ANALYSIS_LIMIT_EVENTS = 32
 BUILTIN_FLAG_PATTERN_DISPLAY = "built-in common CTF patterns"
 
 _BUILTIN_FLAG_REGEX = (
@@ -135,6 +136,51 @@ class ArtifactFinding:
     preview: str
     source: str
     decoded_preview: str | None = None
+
+
+@dataclass(frozen=True)
+class AnalysisLimit:
+    """A resource-limit decision that reduced analysis coverage.
+
+    ``action`` is ``skipped`` (input not analysed), ``partial`` (only a prefix
+    was analysed) or ``stopped`` (a cumulative budget ended processing).
+    ``limit`` is in ``unit``; ``observed`` is set only when the measured
+    quantity is known without extra reads. ``count`` aggregates repeats.
+    """
+
+    source: str
+    reason: str
+    action: Literal["skipped", "partial", "stopped"]
+    limit: int
+    unit: str
+    observed: int | None = None
+    count: int = 1
+
+
+def record_analysis_limit(
+    limits: list[AnalysisLimit] | None, event: AnalysisLimit
+) -> None:
+    """Append or aggregate one event; a ``None`` target records nothing."""
+    if limits is None:
+        return
+    key = (event.source, event.reason, event.action, event.limit, event.unit)
+    for index, existing in enumerate(limits):
+        if (
+            existing.source, existing.reason, existing.action,
+            existing.limit, existing.unit,
+        ) == key:
+            limits[index] = replace(
+                existing,
+                count=existing.count + event.count,
+                observed=(
+                    existing.observed
+                    if existing.observed == event.observed
+                    else None
+                ),
+            )
+            return
+    if len(limits) < MAX_ANALYSIS_LIMIT_EVENTS:
+        limits.append(event)
 
 
 @dataclass(frozen=True)
@@ -310,35 +356,54 @@ def scan_artifacts(
     max_findings: int = MAX_ARTIFACT_FINDINGS,
     *,
     include_possible: bool = False,
+    limits: list[AnalysisLimit] | None = None,
 ) -> list[ArtifactFinding]:
     """
     Detect passive next-stage artifacts in existing textual output.
 
     The scanner performs no I/O. Returned values are bounded and stripped of
     terminal control characters so callers can safely display the previews.
+    When ``limits`` is given, input truncation and finding-budget stops are
+    recorded there.
     """
+    if len(content) > MAX_ARTIFACT_INPUT_CHARS:
+        record_analysis_limit(limits, AnalysisLimit(
+            "artifact_scan", "artifact_input_limit", "partial",
+            MAX_ARTIFACT_INPUT_CHARS, "characters", len(content),
+        ))
     content = content[:MAX_ARTIFACT_INPUT_CHARS]
     findings: list[ArtifactFinding] = []
     seen: set[tuple[str, str, str | None]] = set()
     occupied_urls: list[tuple[int, int]] = []
+    # With ``limits``, set only when a new, valid finding is refused, so
+    # reaching the budget exactly with nothing left to add does not count as a
+    # stop. Without it, stop as soon as the budget is full.
+    budget_stopped = limits is None and max_findings <= 0
 
     def add(artifact_type: str, value: str, decoded: str | None = None) -> None:
+        nonlocal budget_stopped
         preview = _safe_preview(value)
         decoded_preview = _safe_preview(decoded) if decoded is not None else None
         key = (artifact_type, preview, decoded_preview)
-        if preview and key not in seen and len(findings) < max_findings:
-            seen.add(key)
-            findings.append(
-                ArtifactFinding(
-                    artifact_type=artifact_type,
-                    preview=preview,
-                    source=source,
-                    decoded_preview=decoded_preview,
-                )
+        if not preview or key in seen:
+            return
+        if len(findings) >= max_findings:
+            budget_stopped = True
+            return
+        seen.add(key)
+        findings.append(
+            ArtifactFinding(
+                artifact_type=artifact_type,
+                preview=preview,
+                source=source,
+                decoded_preview=decoded_preview,
             )
+        )
+        if limits is None and len(findings) >= max_findings:
+            budget_stopped = True
 
     for match in _URL_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         value = match.group(0).rstrip(".,;:!?)]}")
         if value:
@@ -346,12 +411,12 @@ def scan_artifacts(
             occupied_urls.append((match.start(), match.start() + len(value)))
 
     for match in _CREDENTIAL_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         add("credential", match.group(0).rstrip(".])}"))
 
     for match in _DMS_COORDINATE_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         lat_deg, lat_min, lat_sec, _lat_dir, lon_deg, lon_min, lon_sec, _lon_dir = (
             match.groups()
@@ -375,7 +440,7 @@ def scan_artifacts(
             add("coordinates_dms", match.group(0))
 
     for match in _DECIMAL_COORDINATE_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         latitude, longitude = match.groups()
         # A decimal coordinate must contain a fractional component. This avoids
@@ -388,7 +453,7 @@ def scan_artifacts(
     valid_ipv6: list[tuple[re.Match[str], ipaddress.IPv6Address]] = []
     occupied_ipv6: list[tuple[int, int]] = []
     for match in _IPV6_CANDIDATE_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         candidate = match.group(0).strip("[]")
         if (
@@ -407,7 +472,7 @@ def scan_artifacts(
         occupied_ipv6.append(match.span())
 
     for match in _IPV4_CANDIDATE_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         if _overlaps(match.span(), occupied_urls) or _overlaps(match.span(), occupied_ipv6):
             continue
@@ -418,12 +483,12 @@ def scan_artifacts(
         add("ipv4", str(address_v4))
 
     for _match, address_v6 in valid_ipv6:
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         add("ipv6", str(address_v6))
 
     for match in _BASE64_CANDIDATE_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         candidate = match.group(0)
         decoded = decode_base64_text(candidate)
@@ -431,7 +496,7 @@ def scan_artifacts(
             add("base64", candidate, decoded)
 
     for match in _DOMAIN_PATTERN.finditer(content):
-        if len(findings) >= max_findings:
+        if budget_stopped:
             break
         if _overlaps(match.span(), occupied_urls):
             continue
@@ -450,6 +515,11 @@ def scan_artifacts(
             continue
         add("domain", domain)
 
+    if budget_stopped:
+        record_analysis_limit(limits, AnalysisLimit(
+            "artifact_scan", "artifact_finding_limit", "stopped",
+            max_findings, "findings",
+        ))
     return findings
 
 
@@ -544,17 +614,31 @@ class SubprocessFlagScanner:
         return findings
 
 
-def scan_file(filepath: Path, pattern: re.Pattern) -> list[str]:
-    """Read a bounded regular file and return unique flag matches."""
+def scan_file(
+    filepath: Path,
+    pattern: re.Pattern,
+    *,
+    limits: list[AnalysisLimit] | None = None,
+) -> list[str]:
+    """Read a bounded regular file and return unique flag matches.
+
+    An oversized file is skipped; with ``limits`` the skip is recorded.
+    """
     try:
         if filepath.is_symlink() or not filepath.is_file():
             return []
         with filepath.open("rb") as source:
             raw = source.read(MAX_SCAN_FILE_BYTES + 1)
+            size = os.fstat(source.fileno()).st_size
         if len(raw) > MAX_SCAN_FILE_BYTES:
             logger.debug(
                 f"[scan_file] {filepath} güvenli tarama sınırını aştı; atlandı."
             )
+            record_analysis_limit(limits, AnalysisLimit(
+                "scan_file", "extracted_file_size_limit", "skipped",
+                MAX_SCAN_FILE_BYTES, "bytes",
+                size if size > MAX_SCAN_FILE_BYTES else None,
+            ))
             return []
         content = raw.decode("utf-8", errors="replace")
         return _collect_matches(pattern, content)
@@ -563,8 +647,16 @@ def scan_file(filepath: Path, pattern: re.Pattern) -> list[str]:
         return []
 
 
-def scan_directory(directory: Path, pattern: re.Pattern) -> dict[str, list[str]]:
-    """Recursively scan a directory for flags only, never for artifacts."""
+def scan_directory(
+    directory: Path,
+    pattern: re.Pattern,
+    *,
+    limits: list[AnalysisLimit] | None = None,
+) -> dict[str, list[str]]:
+    """Recursively scan a directory for flags only, never for artifacts.
+
+    With ``limits``, budget stops and oversized-file skips are recorded.
+    """
     results: dict[str, list[str]] = {}
     if not directory.exists():
         return results
@@ -581,18 +673,28 @@ def scan_directory(directory: Path, pattern: re.Pattern) -> dict[str, list[str]]
                 file_size = filepath.stat().st_size
             except OSError:
                 continue
-            if (
-                scanned_files >= MAX_SCAN_FILES
-                or scanned_bytes + file_size > MAX_SCAN_DIRECTORY_BYTES
-            ):
+            if scanned_files >= MAX_SCAN_FILES:
+                event = AnalysisLimit(
+                    "scan_directory", "directory_file_limit", "stopped",
+                    MAX_SCAN_FILES, "files",
+                )
+            elif scanned_bytes + file_size > MAX_SCAN_DIRECTORY_BYTES:
+                event = AnalysisLimit(
+                    "scan_directory", "directory_byte_budget", "stopped",
+                    MAX_SCAN_DIRECTORY_BYTES, "bytes",
+                )
+            else:
+                event = None
+            if event is not None:
                 logger.warning(
                     "[scanner] Yeğenim çıkarılan dosya tarama sınırına ulaştı; "
                     "kalanları güvenlik için es geçiyorum."
                 )
+                record_analysis_limit(limits, event)
                 return results
             scanned_files += 1
             scanned_bytes += file_size
-            found = scan_file(filepath, pattern)
+            found = scan_file(filepath, pattern, limits=limits)
             if found:
                 results[str(filepath.relative_to(directory))] = found
     return results

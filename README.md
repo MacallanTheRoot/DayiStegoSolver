@@ -387,6 +387,65 @@ A plugin that was never reached is reported with a skip reason only when that
 rule would certainly have applied; otherwise it carries the `not_started_*`
 reason. Both fields are `null` for reports that were not produced by a scan.
 
+### Analysis limits
+
+*Unreleased: not part of the published v4.5.2 package.*
+
+Every parser and extractor works within fixed size, count and time budgets so
+that a hostile or huge file cannot exhaust memory, CPU or disk. When one of
+the recorded budgets listed below changes what was analysed, the report says
+so; not every budget is recorded yet. A pipeline that
+`completed` can still have incomplete coverage: `scan_status` describes how the
+scan ended, analysis limits describe what each tool could not fully examine.
+
+JSON reports gain a top-level `analysis_limits` list (empty when no recorded
+limit was reached). TXT reports, the built-in Markdown writeup and the notes
+passed to the optional writeup exporter show the same entries under
+`KAYNAK SINIRLARI`. Each entry is:
+
+```json
+{"tool": "binwalk", "source": "scan_file", "reason": "extracted_file_size_limit",
+ "action": "skipped", "limit": 8388608, "unit": "bytes", "observed": 20971520, "count": 1}
+```
+
+`tool` is the `tool_results[].tool` name of the result that hit the limit;
+`source` is the component that made the decision. `action` is `skipped` (input
+not analysed), `partial` (only a prefix was analysed) or `stopped` (a
+cumulative budget ended processing). `limit` and `observed` use `unit`;
+`observed` is `null` when the exact quantity is not known without extra reads.
+Repeated identical events are merged and counted in `count`; at most 32
+distinct entries are kept per tool result. Entries follow `tool_results`
+order and are sorted within each tool.
+
+| Reason | Source | Action | Meaning |
+|---|---|---|---|
+| `extracted_file_size_limit` | `scan_file` | skipped | An extracted file (steghide, stegseek, binwalk, zip_cracker) is larger than 8 MiB and was not scanned for flags. |
+| `directory_file_limit` | `scan_directory` | stopped | Flag scanning of an extraction directory stopped after 4,096 files; the number of remaining files is not counted. |
+| `directory_byte_budget` | `scan_directory` | stopped | Flag scanning of an extraction directory stopped at the 128 MiB aggregate budget. |
+| `artifact_input_limit` | `artifact_scan/stdout`, `artifact_scan/stderr` | partial | Only the first 4 Mi characters of tool output were searched for next-stage artifacts. |
+| `artifact_finding_limit` | `artifact_scan`, `artifact_scan/<stream>` | stopped | A new artifact was dropped because the 512-artifact budget of one tool result was used up; artifacts repeated in tool output also count against that budget. Without a stream, `artifact_scan` means the plugin itself returned more than 512 artifacts and the rest were dropped; those may include repeats. |
+| `subprocess_output_limit` | `subprocess_stdout`, `subprocess_stderr` | partial | The tool printed more than 10 MiB. Flags are still searched in the complete stream (within the streaming flag-match caps); artifacts, the mini-wordlist and the report use the retained prefix. |
+| `text_source_byte_limit` | `text_stego` | partial | Only the first 8 MiB of a text input were read. |
+| `text_decoded_char_limit` | `text_stego` | partial | Only the first 4,000,000 decoded characters were kept. |
+| `text_analysis_char_limit` | `text_stego` | partial | Text-steganography methods examined the first 1 Mi characters; the direct flag search covered all decoded text. |
+
+Report display shortening is separate and is never listed as an analysis
+limit: JSON and TXT shorten stored stdout/stderr with an inline
+`[TRUNCATED — N chars omitted]` marker, and TXT/Markdown views that show only
+the first findings or lines add a `(+N … yalnızca bu rapor görünümünde
+gösterilmedi)` line. JSON keeps the full finding lists.
+
+`--full-scan` does not lift any limit. Not every limit is recorded yet: limits
+that were already visible as text (for example PDF page, PCAP packet, OLE
+macro and document parser limits, and oversized-input skip reasons) keep their
+existing `skip_reason`/stderr/stdout wording, and some budgets, such as the
+1,024-match flag cap, the streaming flag-match caps, the artifact budgets of
+plugin-internal artifact scans (PDF, OLE, document, QR, OCR, text-stego),
+workspace discovery caps of the text-stego, OCR and QR plugins and the 1 MiB
+extracted-payload check of outguess, are not reported. Text-stego truncation
+is also not reported for an input that was then skipped as non-text. An empty
+`analysis_limits` list therefore does not prove complete coverage.
+
 ---
 
 ## Release status
@@ -794,6 +853,66 @@ Nedenler:
 Hiç ulaşılmayan bir eklenti, yalnızca ilgili atlama kuralı kesin olarak
 geçerliyse atlama nedeniyle raporlanır; aksi halde `not_started_*` nedenini
 taşır. Tarama tarafından üretilmeyen raporlarda iki alan da `null` olur.
+
+### Analiz sınırları
+
+*Yayımlanmadı: yayımlanan v4.5.2 paketinin parçası değildir.*
+
+Her ayrıştırıcı ve çıkarıcı sabit boyut, sayı ve süre bütçeleriyle çalışır;
+böylece kötü niyetli veya çok büyük bir dosya belleği, işlemciyi ya da diski
+tüketemez. Aşağıda listelenen kayıtlı bütçelerden biri analiz edilen kapsamı
+değiştirdiğinde rapor bunu belirtir; henüz her bütçe kaydedilmiyor.
+`completed` olarak biten bir analiz hattının kapsamı yine eksik olabilir:
+`scan_status` taramanın nasıl bittiğini, analiz sınırları ise her aracın
+neyi tam inceleyemediğini anlatır.
+
+JSON raporlarına üst seviye `analysis_limits` listesi eklenir (kayıtlı bir
+sınıra ulaşılmadıysa boştur). TXT raporları, yerleşik Markdown writeup ve
+opsiyonel writeup exporter'a verilen notlar aynı kayıtları `KAYNAK SINIRLARI`
+başlığı altında gösterir. Her kayıt şöyledir:
+
+```json
+{"tool": "binwalk", "source": "scan_file", "reason": "extracted_file_size_limit",
+ "action": "skipped", "limit": 8388608, "unit": "bytes", "observed": 20971520, "count": 1}
+```
+
+`tool`, sınıra takılan sonucun `tool_results[].tool` adıdır; `source` kararı
+veren bileşendir. `action` değeri `skipped` (girdi analiz edilmedi), `partial`
+(yalnız baştaki kısım analiz edildi) veya `stopped` (toplam bütçe işlemi
+durdurdu) olur. `limit` ve `observed` `unit` birimindedir; kesin miktar ek okuma
+yapmadan bilinmiyorsa `observed` `null` olur. Aynı olaylar birleştirilir ve
+`count` ile sayılır; her araç sonucu için en fazla 32 farklı kayıt tutulur.
+Kayıtlar `tool_results` sırasını izler ve her araç içinde sıralanır.
+
+| Neden | Kaynak | Eylem | Anlamı |
+|---|---|---|---|
+| `extracted_file_size_limit` | `scan_file` | skipped | Çıkarılan bir dosya (steghide, stegseek, binwalk, zip_cracker) 8 MiB'tan büyük ve flag için taranmadı. |
+| `directory_file_limit` | `scan_directory` | stopped | Çıkarım klasörünün flag taraması 4.096 dosyadan sonra durdu; kalan dosya sayısı sayılmaz. |
+| `directory_byte_budget` | `scan_directory` | stopped | Çıkarım klasörünün flag taraması 128 MiB toplam bütçede durdu. |
+| `artifact_input_limit` | `artifact_scan/stdout`, `artifact_scan/stderr` | partial | Araç çıktısının yalnız ilk 4 Mi karakterinde sonraki aşama artifact'ı arandı. |
+| `artifact_finding_limit` | `artifact_scan`, `artifact_scan/<akış>` | stopped | Bir araç sonucunun 512 artifact bütçesi dolduğu için yeni bir artifact bırakıldı; araç çıktısında tekrar eden artifact'lar da bu bütçeden düşer. Akış belirtilmeyen `artifact_scan`, eklentinin kendisinin 512'den fazla artifact döndürdüğü ve fazlasının bırakıldığı anlamına gelir; bırakılanlar tekrar içerebilir. |
+| `subprocess_output_limit` | `subprocess_stdout`, `subprocess_stderr` | partial | Araç 10 MiB'tan fazla çıktı verdi. Flag araması akışın tamamında yapılır (akış flag eşleşme sınırları içinde); artifact, mini-wordlist ve rapor saklanan baş kısmı kullanır. |
+| `text_source_byte_limit` | `text_stego` | partial | Metin girdisinin yalnız ilk 8 MiB'ı okundu. |
+| `text_decoded_char_limit` | `text_stego` | partial | Çözülen metnin yalnız ilk 4.000.000 karakteri tutuldu. |
+| `text_analysis_char_limit` | `text_stego` | partial | Metin steganografi yöntemleri ilk 1 Mi karakteri inceledi; doğrudan flag araması çözülen metnin tamamını kapsadı. |
+
+Rapor görünümünün kısaltılması ayrıdır ve hiçbir zaman analiz sınırı olarak
+listelenmez: JSON ve TXT, saklanan stdout/stderr'i satır içi
+`[TRUNCATED — N chars omitted]` işaretiyle kısaltır; yalnız ilk bulguları veya
+satırları gösteren TXT/Markdown görünümleri `(+N … yalnızca bu rapor
+görünümünde gösterilmedi)` satırı ekler. JSON bulgu listelerinin tamamını
+tutar.
+
+`--full-scan` hiçbir sınırı kaldırmaz. Henüz her sınır kaydedilmiyor: zaten
+metin olarak görünen sınırlar (örneğin PDF sayfa, PCAP paket, OLE makro ve
+belge ayrıştırıcı sınırları ile büyük girdi atlama nedenleri) mevcut
+`skip_reason`/stderr/stdout ifadelerini korur; 1.024 eşleşmelik flag sınırı,
+akış flag eşleşme sınırları, eklenti içi artifact taramalarının (PDF, OLE,
+belge, QR, OCR, text-stego) artifact bütçeleri, text-stego, OCR ve QR
+eklentilerinin çalışma alanı keşif sınırları ve outguess'in 1 MiB'lık
+çıkarılan veri kontrolü gibi bazı bütçeler raporlanmaz. Metin olmadığı için
+atlanan bir girdide text-stego kırpması da raporlanmaz. Bu yüzden boş bir
+`analysis_limits` listesi kapsamın tam olduğunu kanıtlamaz.
 
 ---
 

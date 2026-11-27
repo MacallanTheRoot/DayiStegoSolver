@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tempfile
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -18,8 +19,10 @@ from dayi.persona import PlainTerminalUI, TerminalUI, create_terminal_ui
 from dayi.reporter import PluginNotRun, ScanReport, ToolResult
 from dayi.scanner import (
     MAX_ARTIFACT_FINDINGS,
+    AnalysisLimit,
     ArtifactFinding,
     decode_base64_text,
+    record_analysis_limit,
     scan_artifacts,
 )
 from dayi.tools._base import sanitize_token
@@ -950,25 +953,53 @@ class DayiRunner:
 
     def _attach_artifacts(self, result: ToolResult) -> None:
         """Attach passive next-stage artifacts and announce each value once."""
+        budget_event = AnalysisLimit(
+            "artifact_scan", "artifact_finding_limit", "stopped",
+            MAX_ARTIFACT_FINDINGS, "findings",
+        )
         if len(result.artifacts_found) > MAX_ARTIFACT_FINDINGS:
+            record_analysis_limit(
+                result.analysis_limits,
+                replace(budget_event, observed=len(result.artifacts_found)),
+            )
             del result.artifacts_found[MAX_ARTIFACT_FINDINGS:]
         existing = {
             (item.artifact_type, item.preview, item.decoded_preview)
             for item in result.artifacts_found
         }
+        refused: dict[str, set[tuple[str, str, str | None]]] = {}
         for stream_name, content in (("stdout", result.stdout), ("stderr", result.stderr)):
             if not content:
                 continue
             source = f"{result.tool_name}/{stream_name}"
-            remaining = MAX_ARTIFACT_FINDINGS - len(existing)
-            if remaining <= 0:
-                break
-            for finding in scan_artifacts(
+            stream_event_source = f"artifact_scan/{stream_name}"
+            remaining = max(0, MAX_ARTIFACT_FINDINGS - len(existing))
+            stream_limits: list[AnalysisLimit] = []
+            # Scan one finding past anything the budget could still keep. The
+            # first ``remaining`` results are exactly what a
+            # ``max_findings=remaining`` scan returns (same append order), so
+            # retention is unchanged; the rest only show whether a genuinely
+            # new artifact was refused; the event is decided after both
+            # streams, since a later stream may still keep it.
+            scanned = scan_artifacts(
                 _artifact_scan_content(result.tool_name, content),
                 source=source,
-                max_findings=remaining,
+                max_findings=remaining + len(existing) + 1,
                 include_possible=self.include_possible_artifacts,
-            ):
+                limits=stream_limits,
+            )
+            findings = scanned[:remaining]
+            for event in stream_limits:
+                if event.reason != budget_event.reason:
+                    record_analysis_limit(
+                        result.analysis_limits,
+                        replace(event, source=stream_event_source),
+                    )
+            refused[stream_event_source] = {
+                (item.artifact_type, item.preview, item.decoded_preview)
+                for item in scanned[remaining:]
+            }
+            for finding in findings:
                 key = (
                     finding.artifact_type,
                     finding.preview,
@@ -995,6 +1026,12 @@ class DayiRunner:
                     f"[!] Yeğenim bak burada bir {label} buldum, "
                     "buraları bir eşele; sonraki aşama bu olabilir! "
                     f"[{finding.source}] → {finding.preview!r}{decoded}",
+                )
+        for stream_event_source, keys in refused.items():
+            if keys - existing:
+                record_analysis_limit(
+                    result.analysis_limits,
+                    replace(budget_event, source=stream_event_source),
                 )
 
     def _build_report(self) -> ScanReport:

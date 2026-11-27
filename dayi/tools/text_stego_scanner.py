@@ -10,9 +10,17 @@ from pathlib import Path
 from typing import Callable
 
 from dayi.reporter import ToolResult
-from dayi.scanner import MAX_ARTIFACT_FINDINGS, ArtifactFinding, scan_artifacts
+from dayi.scanner import (
+    MAX_ARTIFACT_FINDINGS,
+    AnalysisLimit,
+    ArtifactFinding,
+    record_analysis_limit,
+    scan_artifacts,
+)
 from dayi.text_stego import (
     DEFAULT_HINT_LIMIT,
+    MAX_ANALYSIS_CHARACTERS,
+    MAX_DECODED_CHARACTERS,
     MAX_SOURCE_BYTES,
     VERBOSE_HINT_LIMIT,
     DecodeCandidate,
@@ -117,6 +125,25 @@ async def run_text_stego(
             skip_reason=reason,
         )
 
+    limits: list[AnalysisLimit] = []
+    if source.source_truncated:
+        record_analysis_limit(limits, AnalysisLimit(
+            "text_stego", "text_source_byte_limit", "partial",
+            MAX_SOURCE_BYTES, "bytes",
+        ))
+    if source.decoded_truncated:
+        record_analysis_limit(limits, AnalysisLimit(
+            "text_stego", "text_decoded_char_limit", "partial",
+            MAX_DECODED_CHARACTERS, "characters",
+        ))
+    # analyze_text_input runs the stego methods on this prefix; the direct
+    # flag search still covers the whole decoded text.
+    if len(source.text) > MAX_ANALYSIS_CHARACTERS:
+        record_analysis_limit(limits, AnalysisLimit(
+            "text_stego", "text_analysis_char_limit", "partial",
+            MAX_ANALYSIS_CHARACTERS, "characters", len(source.text),
+        ))
+
     extracted_flags: dict[str, list[str]] = {}
     seen_flags: set[str] = set()
     for candidate in analysis.candidates:
@@ -182,6 +209,7 @@ async def run_text_stego(
         elapsed_seconds=elapsed,
         extracted_flags=extracted_flags,
         artifacts_found=artifacts,
+        analysis_limits=limits,
     )
 
 
@@ -303,8 +331,11 @@ def _merge_text_results(
     any_complete = False
     any_timeout = False
     any_error = False
+    limits: list[AnalysisLimit] = []
 
     for source, result in results:
+        for event in result.analysis_limits:
+            record_analysis_limit(limits, event)
         if result.stdout:
             stdout_sections.append(f"Source: {source}\n{result.stdout}")
         if result.stderr:
@@ -363,6 +394,7 @@ def _merge_text_results(
         ),
         extracted_flags=extracted_flags,
         artifacts_found=artifacts,
+        analysis_limits=limits,
     )
 
 

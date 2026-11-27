@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Protocol, TypeVar
 
 from dayi.reporter import ToolResult
+from dayi.scanner import AnalysisLimit, record_analysis_limit
 
 logger = logging.getLogger("dayi")
 
@@ -612,8 +613,13 @@ async def async_run_command(
     *,
     stdout_observer: StreamObserver | None = None,
     stderr_observer: StreamObserver | None = None,
+    limits: list[AnalysisLimit] | None = None,
 ) -> tuple[int | None, str, str, float, bool]:
-    """Run a subprocess and decode its bounded diagnostic text as UTF-8."""
+    """Run a subprocess and decode its bounded diagnostic text as UTF-8.
+
+    With ``limits``, each stream that exceeded the retained-output limit is
+    recorded; observers still see the complete stream.
+    """
     (
         rc,
         raw_stdout,
@@ -635,8 +641,16 @@ async def async_run_command(
     stderr = raw_stderr.decode("utf-8", errors="replace")
     if stdout_truncated:
         stdout += f"\n... [subprocess stdout truncated at {PIPE_OUTPUT_LIMIT} bytes] ..."
+        record_analysis_limit(limits, AnalysisLimit(
+            "subprocess_stdout", "subprocess_output_limit", "partial",
+            PIPE_OUTPUT_LIMIT, "bytes",
+        ))
     if stderr_truncated:
         stderr += f"\n... [subprocess stderr truncated at {PIPE_OUTPUT_LIMIT} bytes] ..."
+        record_analysis_limit(limits, AnalysisLimit(
+            "subprocess_stderr", "subprocess_output_limit", "partial",
+            PIPE_OUTPUT_LIMIT, "bytes",
+        ))
     return rc, stdout, stderr, elapsed, timed_out
 
 

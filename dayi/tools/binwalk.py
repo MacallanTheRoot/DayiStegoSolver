@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 from dayi.reporter import ToolResult
-from dayi.scanner import SubprocessFlagScanner, scan_directory
+from dayi.scanner import AnalysisLimit, SubprocessFlagScanner, scan_directory
 from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
@@ -162,6 +162,7 @@ async def run_binwalk(
 
         logger.info(TOOL_INTROS[TOOL_NAME])
         stream_scanner = SubprocessFlagScanner(flag_pattern)
+        limits: list[AnalysisLimit] = []
         rc, stdout, stderr, elapsed, timed_out = await async_run_command(
             cmd,
             TOOL_NAME,
@@ -169,6 +170,7 @@ async def run_binwalk(
             cwd=tmpdir,
             stdout_observer=stream_scanner.stdout,
             stderr_observer=stream_scanner.stderr,
+            limits=limits,
         )
 
         stream_flags = stream_scanner.findings(stdout, stderr)
@@ -209,6 +211,7 @@ async def run_binwalk(
                     elapsed_seconds=elapsed,
                     extracted_dir=None,
                     stream_flags=stream_flags,
+                    analysis_limits=limits,
                     error=True,
                 )
 
@@ -216,7 +219,7 @@ async def run_binwalk(
             logger.debug(f"[binwalk] Çıkarım klasörü taranıyor: {extract_dir}")
 
             extracted_flags = await asyncio.to_thread(
-                scan_directory, extract_dir, flag_pattern
+                scan_directory, extract_dir, flag_pattern, limits=limits
             )
 
             if extracted_flags:
@@ -244,6 +247,7 @@ async def run_binwalk(
             extracted_dir=extracted_dir_str,
             extracted_flags=extracted_flags,
             stream_flags=stream_flags,
+            analysis_limits=limits,
         )
 
     finally:
