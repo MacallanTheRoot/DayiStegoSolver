@@ -32,7 +32,7 @@ from dayi.extraction import (
     validate_extracted_payload,
 )
 from dayi.reporter import ToolResult
-from dayi.scanner import SubprocessFlagScanner
+from dayi.scanner import AnalysisLimit, SubprocessFlagScanner
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -102,12 +102,14 @@ async def run_outguess(
 
         logger.info(TOOL_INTROS[TOOL_NAME])
         stream_scanner = SubprocessFlagScanner(flag_pattern)
+        limits: list[AnalysisLimit] = []
         rc, stdout, stderr, elapsed, timed_out = await async_run_command(
             cmd,
             TOOL_NAME,
             timeout,
             stdout_observer=stream_scanner.stdout,
             stderr_observer=stream_scanner.stderr,
+            limits=limits,
         )
 
         stream_flags = stream_scanner.findings(stdout, stderr)
@@ -155,6 +157,7 @@ async def run_outguess(
             timed_out=timed_out,
             extracted_flags=extracted_flags,
             stream_flags=stream_flags,
+            analysis_limits=limits,
             extraction_succeeded=extraction_succeeded,
         )
 

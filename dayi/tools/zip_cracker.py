@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import re
@@ -15,7 +16,7 @@ from typing import Callable, Iterable, Iterator
 
 from dayi.persona import log_artifact
 from dayi.reporter import ToolResult
-from dayi.scanner import scan_directory
+from dayi.scanner import AnalysisLimit, scan_directory
 from dayi.tools._base import iter_wordlist_lines, make_skipped_result
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
 
@@ -258,6 +259,8 @@ def _crack_archives_sync(
     flag_pattern: re.Pattern,
     cancel_event: threading.Event,
     deadline: float,
+    *,
+    limits: list[AnalysisLimit] | None = None,
 ) -> tuple[
     list[str],
     dict[str, list[str]],
@@ -326,7 +329,7 @@ def _crack_archives_sync(
 
                 archive_label = str(archive_path.relative_to(workspace))
                 for relative_name, hits in scan_directory(
-                    extraction_dir, flag_pattern
+                    extraction_dir, flag_pattern, limits=limits
                 ).items():
                     key = f"{archive_label}!/{relative_name}"
                     extracted_flags[key] = hits
@@ -373,10 +376,12 @@ async def run_zip_cracker(
     cancel_event = threading.Event()
     deadline = started + max(1.0, timeout)
     loop = asyncio.get_running_loop()
+    # Filled by the single worker thread; read only after it has finished.
+    limits: list[AnalysisLimit] = []
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="dayi-zip") as executor:
         worker = loop.run_in_executor(
             executor,
-            _crack_archives_sync,
+            functools.partial(_crack_archives_sync, limits=limits),
             workspace,
             output_root,
             mini_wordlist,
@@ -412,6 +417,7 @@ async def run_zip_cracker(
                 flags_found=[],
                 elapsed_seconds=time.monotonic() - started,
                 timed_out=True,
+                analysis_limits=limits,
             )
         except asyncio.CancelledError:
             cancel_event.set()
@@ -468,6 +474,7 @@ async def run_zip_cracker(
         ),
         extracted_dir=str(output_root) if cracked or unencrypted else None,
         extracted_flags=extracted_flags,
+        analysis_limits=limits,
     )
 
 

@@ -125,6 +125,9 @@ class TextInput:
     printable_ratio: float
     control_ratio: float
     truncated: bool
+    # Causes of ``truncated``: source read cap and decoded-character cap.
+    source_truncated: bool = False
+    decoded_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -312,7 +315,10 @@ def detect_text_bytes(data: bytes, *, truncated: bool = False) -> TextInput:
         printable_bytes = sum(byte in (9, 10, 13) or 32 <= byte <= 126 for byte in bounded)
         ratio = printable_bytes / max(1, len(bounded))
         classification: TextClassification = "text-fragments" if ratio >= 0.55 else "binary"
-        return TextInput(bounded, "", None, classification, ratio, 1.0 - ratio, truncated)
+        return TextInput(
+            bounded, "", None, classification, ratio, 1.0 - ratio, truncated,
+            source_truncated=truncated,
+        )
 
     _score, encoding, selected = max(decodes, key=lambda item: (item[0], item[1]))
     decoded_truncated = len(selected) > MAX_DECODED_CHARACTERS
@@ -335,6 +341,8 @@ def detect_text_bytes(data: bytes, *, truncated: bool = False) -> TextInput:
         printable,
         controls,
         truncated or decoded_truncated,
+        source_truncated=truncated,
+        decoded_truncated=decoded_truncated,
     )
 
 

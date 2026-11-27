@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from dayi.reporter import ToolResult
-from dayi.scanner import SubprocessFlagScanner
+from dayi.scanner import AnalysisLimit, SubprocessFlagScanner
 from dayi.tools._base import async_run_command, is_tool_available, make_skipped_result
 from dayi.persona import TOOL_INTROS, TOOL_SKIP_MESSAGES, TOOL_SUCCESS_MESSAGES
 from dayi.tools._plugin import PluginContext, PluginPhase, ToolPlugin
@@ -43,12 +43,14 @@ async def run_exiftool(
 
     logger.info(TOOL_INTROS[TOOL_NAME])
     stream_scanner = SubprocessFlagScanner(flag_pattern)
+    limits: list[AnalysisLimit] = []
     rc, stdout, stderr, elapsed, timed_out = await async_run_command(
         cmd,
         TOOL_NAME,
         timeout,
         stdout_observer=stream_scanner.stdout,
         stderr_observer=stream_scanner.stderr,
+        limits=limits,
     )
 
     stream_flags = stream_scanner.findings(stdout, stderr)
@@ -68,6 +70,7 @@ async def run_exiftool(
         elapsed_seconds=elapsed,
         timed_out=timed_out,
         stream_flags=stream_flags,
+        analysis_limits=limits,
     )
 
 

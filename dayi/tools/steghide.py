@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from dayi.reporter import ToolResult
-from dayi.scanner import SubprocessFlagScanner, scan_file
+from dayi.scanner import (
+    AnalysisLimit,
+    SubprocessFlagScanner,
+    record_analysis_limit,
+    scan_file,
+)
 from dayi.tools._base import (
     FileType,
     async_run_command,
@@ -98,6 +103,7 @@ async def run_steghide(
 
     logger.info(TOOL_INTROS[TOOL_NAME])
     stream_scanner = SubprocessFlagScanner(flag_pattern)
+    limits: list[AnalysisLimit] = []
     rc, stdout, stderr, elapsed, timed_out = await async_run_command(
         cmd,
         TOOL_NAME,
@@ -105,6 +111,7 @@ async def run_steghide(
         stdin_data=b"\n",
         stdout_observer=stream_scanner.stdout,
         stderr_observer=stream_scanner.stderr,
+        limits=limits,
     )
 
     stream_flags = stream_scanner.findings(stdout, stderr)
@@ -124,7 +131,9 @@ async def run_steghide(
             ]
             await async_run_command(extract_cmd, TOOL_NAME, timeout, stdin_data=b"\n")
             if out_path.exists():
-                hits = await asyncio.to_thread(scan_file, out_path, flag_pattern)
+                hits = await asyncio.to_thread(
+                    scan_file, out_path, flag_pattern, limits=limits
+                )
                 if hits:
                     extracted_flags["steghide_extracted"] = hits
                     flags = list(dict.fromkeys(flags + hits))
@@ -143,6 +152,7 @@ async def run_steghide(
         timed_out=timed_out,
         extracted_flags=extracted_flags,
         stream_flags=stream_flags,
+        analysis_limits=limits,
     )
 
 
@@ -230,6 +240,7 @@ async def run_steghide_bruteforce(
     )
     start = time.monotonic()
     semaphore = asyncio.Semaphore(max_concurrent)
+    limits: list[AnalysisLimit] = []
 
     async def try_password(password: str, tmpdir: Path) -> tuple[bool, list[str], str]:
         """Attempt extraction with a single password. Returns (success, flags, password)."""
@@ -248,7 +259,13 @@ async def run_steghide_bruteforce(
             and out_path.is_file()
             and out_path.stat().st_size > 0
         ):
-            hits = await asyncio.to_thread(scan_file, out_path, flag_pattern)
+            attempt_limits: list[AnalysisLimit] = []
+            hits = await asyncio.to_thread(
+                scan_file, out_path, flag_pattern, limits=attempt_limits
+            )
+            # Merged on the event loop thread; worker threads never share it.
+            for event in attempt_limits:
+                record_analysis_limit(limits, event)
             return True, hits, password
         return False, [], password
 
@@ -323,6 +340,7 @@ async def run_steghide_bruteforce(
         elapsed_seconds=elapsed,
         timed_out=False,
         extraction_succeeded=found_password is not None,
+        analysis_limits=limits,
     )
 
 
