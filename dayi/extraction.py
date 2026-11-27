@@ -6,7 +6,10 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from dayi.scanner import FlagMatcher
 
 
 MAX_EXTRACTION_VALIDATION_BYTES = 1024 * 1024
@@ -75,7 +78,7 @@ def _meaningful_text(data: bytes, printable_ratio: float) -> bool:
     return len(distinct) >= 5
 
 
-def _flags(data: bytes, pattern: re.Pattern) -> tuple[str, ...]:
+def _flags(data: bytes, pattern: FlagMatcher) -> tuple[str, ...]:
     text = data.decode("utf-8", errors="replace")
     found: dict[str, None] = {}
     for match in pattern.finditer(text):

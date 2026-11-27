@@ -14,7 +14,10 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from itertools import permutations
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from dayi.scanner import FlagMatcher
 
 
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
@@ -359,7 +362,7 @@ def read_text_input(path: Path) -> TextInput:
     )
 
 
-def _find_flags(value: str, pattern: re.Pattern) -> tuple[str, ...]:
+def _find_flags(value: str, pattern: FlagMatcher) -> tuple[str, ...]:
     found: dict[str, None] = {}
     total_characters = 0
     for match in pattern.finditer(value):

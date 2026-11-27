@@ -248,6 +248,78 @@ Dayı processes untrusted CTF files, so analysis is deliberately constrained. It
 
 No local forensic tool can provide a complete sandbox guarantee. Use a disposable VM or container for unknown files and keep third-party tools updated.
 
+### Custom flag patterns (`--flag`)
+
+*Unreleased: not part of the published v4.5.2 package.*
+
+A custom pattern is a Python `re` regular expression. Python cannot interrupt
+a running match, and a pattern that looks harmless, such as `F.*L.*A.*G.*\}`,
+can run for minutes or longer on long, almost-matching text. Custom patterns
+are therefore limited in two ways:
+
+- **Validation** (unchanged from 4.5.2): patterns longer than 512 characters,
+  back-references, lookaround and nested ambiguous repeats such as `(a+)+` are
+  rejected before the scan starts (exit code 1). This check is a heuristic;
+  passing it does not mean a pattern is fast.
+- **Bounded execution**: every match of a custom pattern in Dayı's main
+  process runs in a separate worker process, one per scan. A match gets at
+  most 5 seconds, or less when the scan budget is almost used up; then the
+  worker is killed and the next input gets a fresh one. All custom-pattern
+  work in a scan (worker start-up, matching, communication and stopping a
+  worker) shares a time budget of `--timeout` seconds; when it is used up, the
+  remaining inputs are not searched with the pattern. The budget is capped at
+  one hour: a larger or non-finite `--timeout` (`inf`, `nan`) gives
+  custom-pattern matching a one-hour budget, while the tools keep their usual
+  `--timeout`. Every wait for the worker during a match, including sending it
+  an input and reading its results, ends at the per-match limit, and waiting
+  for a worker to start ends after 30 seconds; a worker that stops responding
+  is killed. A single input longer than 16 Mi characters is not
+  searched (no current input source produces one).
+
+Matching behaviour is unchanged: the same pattern and flags, the full matched
+text, unique values in first-occurrence order, at most 1,024 per input. Flags
+found before a match was stopped are kept, and early stop and `--full-scan`
+work as before. The built-in pattern used without `--flag` is not affected.
+
+A stopped or skipped match is not a "no flag" result. It is listed under
+`analysis_limits` (see [Analysis limits](#analysis-limits)); the scan still
+ends as `completed` or `early_stopped`, and the tool result is not marked as
+timed out.
+
+Limitations:
+
+- The worker adds a short start-up per scan and some inter-process overhead
+  to every match of a custom pattern. The start-up counts against the budget,
+  so a `--timeout` shorter than the worker start-up (a fraction of a second,
+  longer on a loaded machine) leaves no time for custom-pattern matching in the
+  main process; the skipped inputs are reported as
+  `flag_regex_budget_exhausted`.
+- A match made from the asyncio event loop blocks the loop until it ends. It
+  can also first wait for another match in progress or for a worker start, so
+  the wait is bounded by the time left in the scan budget rather than by the
+  5-second per-match limit, and Ctrl+C can take that long to act. The scan
+  budget itself can be exceeded once, by at most one worker start-up (up to
+  30 seconds) plus stopping a worker (about one second). Starting the worker
+  process and waiting for a killed worker to exit are bounded by the operating
+  system rather than by these deadlines.
+- Programs that use `build_flag_pattern_config(...).compiled` outside
+  `DayiRunner` get a 60-second budget for that object until they call
+  `start_scan()`; `close()` stops the worker. The object provides only
+  `pattern`, `flags` and `finditer` (full-match `group(0)`), not `search`,
+  `match`, `findall` or `sub`.
+- Text-steganography, document and pytesseract OCR analysis already run in
+  isolated child processes. There the pattern is matched inside that child and
+  is bounded only by that plugin's own timeout, not by the regex budget.
+- Programs that pass their own `re.Pattern` to `DayiRunner`, or use
+  `compile_pattern` directly, are not bounded; use
+  `build_flag_pattern_config`.
+- Bounded execution needs POSIX `poll()` (Linux is the supported platform).
+  Without it, custom-pattern matching in the main process is turned off and
+  reported as `flag_regex_worker_failure`.
+- This bounds the time spent on custom-pattern matching. It is not a deadline
+  for the whole scan (each tool keeps its own `--timeout`) and not a complete
+  protection against denial of service.
+
 ---
 
 ## Reports and integrations
@@ -428,6 +500,13 @@ order and are sorted within each tool.
 | `text_source_byte_limit` | `text_stego` | partial | Only the first 8 MiB of a text input were read. |
 | `text_decoded_char_limit` | `text_stego` | partial | Only the first 4,000,000 decoded characters were kept. |
 | `text_analysis_char_limit` | `text_stego` | partial | Text-steganography methods examined the first 1 Mi characters; the direct flag search covered all decoded text. |
+| `flag_regex_timeout` | `flag_regex` | partial | A custom `--flag` match was stopped at the 5-second per-match limit (`limit`, in milliseconds); flags found in that input before the stop are kept. |
+| `flag_regex_budget_exhausted` | `flag_regex` | skipped, partial | The scan's custom-pattern time budget (`--timeout`, shown in milliseconds) was used up: `skipped` means the input was not searched with the pattern, `partial` means a match was stopped because the budget ran out (flags found before the stop are kept). |
+| `flag_regex_input_limit` | `flag_regex` | skipped | An input longer than 16 Mi characters was not searched with the custom pattern. |
+| `flag_match_limit` | `flag_regex` | partial | A custom pattern found more than 1,024 distinct matches in one input; only the first 1,024 were kept. |
+| `flag_regex_worker_failure` | `flag_regex` | skipped | The custom-pattern worker could not start or stopped unexpectedly; custom-pattern matching stays off for the rest of the scan (`limit` 0, unit `none`). |
+
+The `flag_regex` entries are explained in [Custom flag patterns](#custom-flag-patterns---flag).
 
 Report display shortening is separate and is never listed as an analysis
 limit: JSON and TXT shorten stored stdout/stderr with an inline
@@ -439,7 +518,7 @@ gösterilmedi)` line. JSON keeps the full finding lists.
 that were already visible as text (for example PDF page, PCAP packet, OLE
 macro and document parser limits, and oversized-input skip reasons) keep their
 existing `skip_reason`/stderr/stdout wording, and some budgets, such as the
-1,024-match flag cap, the streaming flag-match caps, the artifact budgets of
+1,024-match cap of the built-in flag pattern, the streaming flag-match caps, the artifact budgets of
 plugin-internal artifact scans (PDF, OLE, document, QR, OCR, text-stego),
 workspace discovery caps of the text-stego, OCR and QR plugins and the 1 MiB
 extracted-payload check of outguess, are not reported. Text-stego truncation
@@ -735,6 +814,80 @@ Dayı güvenilmeyen CTF dosyalarını işler. Bu nedenle path traversal, symlink
 
 Hiçbir yerel forensics aracı tam sandbox garantisi vermez. Bilinmeyen dosyaları disposable VM veya container içinde analiz et ve üçüncü taraf araçları güncel tut.
 
+### Özel flag desenleri (`--flag`)
+
+*Yayımlanmadı: yayımlanmış v4.5.2 paketinin parçası değildir.*
+
+Özel desen bir Python `re` düzenli ifadesidir. Python çalışmakta olan bir
+eşleştirmeyi kesemez; `F.*L.*A.*G.*\}` gibi zararsız görünen bir desen, uzun ve
+neredeyse eşleşen bir metinde dakikalarca veya daha uzun sürebilir. Bu yüzden
+özel desenler iki şekilde sınırlandırılır:
+
+- **Doğrulama** (4.5.2 ile aynı): 512 karakterden uzun desenler, geri
+  referanslar, lookaround ve `(a+)+` gibi iç içe belirsiz tekrarlar tarama
+  başlamadan reddedilir (çıkış kodu 1). Bu kontrol sezgiseldir; kontrolden
+  geçmek desenin hızlı olduğu anlamına gelmez.
+- **Sınırlı çalıştırma**: özel desenin Dayı ana sürecindeki her eşleştirmesi,
+  tarama başına bir tane olan ayrı bir işçi süreçte çalışır. Bir eşleştirmeye
+  en fazla 5 saniye, tarama bütçesi bitmek üzereyse daha az süre verilir;
+  ardından işçi öldürülür ve sonraki girdi için yeni bir işçi başlatılır. Bir
+  taramadaki tüm özel desen işleri (işçi başlatma, eşleştirme, süreçler arası
+  iletişim ve işçiyi durdurma) `--timeout` saniyelik ortak bir süre bütçesini
+  paylaşır; bütçe bitince kalan girdiler bu desenle aranmaz. Bütçe en fazla
+  bir saattir: daha büyük veya sonlu olmayan bir `--timeout` (`inf`, `nan`)
+  özel desen eşleştirmesine bir saatlik bütçe verir; araçlar `--timeout`
+  değerini her zamanki gibi kullanır. Bir eşleştirme sırasında işçiye girdi
+  gönderme ve sonuçlarını okuma dahil işçiyi her bekleyiş eşleştirme başına
+  sınırda, bir işçinin başlamasını bekleme 30 saniyede biter; yanıt vermeyen
+  bir işçi öldürülür. 16 Mi karakterden uzun tek bir girdi aranmaz
+  (mevcut girdi kaynaklarının hiçbiri böyle bir girdi üretmez).
+
+Eşleştirme davranışı değişmedi: aynı desen ve bayraklar, eşleşen metnin
+tamamı, ilk görülme sırasına göre tekil değerler, girdi başına en fazla 1.024.
+Bir eşleştirme durdurulmadan önce bulunan flag'ler korunur; erken durma ve
+`--full-scan` eskisi gibi çalışır. `--flag` verilmeden kullanılan yerleşik
+desen bundan etkilenmez.
+
+Durdurulan veya atlanan bir eşleştirme "flag yok" sonucu değildir.
+`analysis_limits` altında listelenir (bkz. [Analiz sınırları](#analiz-sınırları));
+tarama yine `completed` veya `early_stopped` olarak biter ve araç sonucu
+zaman aşımına uğramış olarak işaretlenmez.
+
+Sınırlamalar:
+
+- İşçi, tarama başına kısa bir başlatma süresi ve özel desenin her
+  eşleştirmesine bir miktar süreçler arası iletişim maliyeti ekler. Başlatma
+  süresi bütçeden düşer; bu yüzden işçinin başlama süresinden (saniyenin bir
+  kısmı, yüklü bir makinede daha uzun) kısa bir `--timeout`, ana süreçte özel
+  desen eşleştirmesine süre bırakmaz; atlanan girdiler
+  `flag_regex_budget_exhausted` olarak raporlanır.
+- asyncio olay döngüsünden yapılan bir eşleştirme bitene kadar döngüyü
+  bekletir. Önce sürmekte olan başka bir eşleştirmeyi veya bir işçinin
+  başlamasını da bekleyebileceği için bu bekleme 5 saniyelik eşleştirme
+  sınırıyla değil, tarama bütçesinde kalan süreyle sınırlıdır; Ctrl+C'nin
+  etkisi bu kadar gecikebilir. Tarama bütçesi bir kez, en fazla bir işçi
+  başlatması (en fazla 30 saniye) ile bir işçiyi durdurma (yaklaşık bir
+  saniye) kadar aşılabilir. İşçi sürecinin başlatılması ve öldürülen bir
+  işçinin çıkışının beklenmesi bu sürelerle değil, işletim sistemiyle
+  sınırlıdır.
+- `build_flag_pattern_config(...).compiled` nesnesini `DayiRunner` dışında
+  kullanan programlar, `start_scan()` çağırana kadar o nesne için 60 saniyelik
+  bir bütçe alır; `close()` işçiyi durdurur. Nesne yalnız `pattern`, `flags` ve
+  `finditer` (tam eşleşme, `group(0)`) sağlar; `search`, `match`, `findall`
+  veya `sub` sağlamaz.
+- Metin steganografisi, belge ve pytesseract OCR analizi zaten yalıtılmış
+  alt süreçlerde çalışır. Orada desen o alt süreçte eşleştirilir ve yalnız o
+  eklentinin kendi zaman aşımıyla sınırlanır, regex bütçesiyle değil.
+- `DayiRunner`'a kendi `re.Pattern` nesnesini veren veya `compile_pattern`'ı
+  doğrudan kullanan programlar sınırlanmaz; `build_flag_pattern_config`
+  kullanılmalıdır.
+- Sınırlı çalıştırma POSIX `poll()` gerektirir (desteklenen platform
+  Linux'tur). Bu olmadan ana süreçte özel desen eşleştirmesi kapatılır ve
+  `flag_regex_worker_failure` olarak raporlanır.
+- Bu, özel desen eşleştirmesine harcanan süreyi sınırlar. Taramanın tamamı
+  için bir süre sınırı değildir (her araç kendi `--timeout` değerini kullanır)
+  ve hizmet engellemeye karşı tam bir koruma değildir.
+
 ---
 
 ## Raporlar ve entegrasyonlar
@@ -895,6 +1048,13 @@ Kayıtlar `tool_results` sırasını izler ve her araç içinde sıralanır.
 | `text_source_byte_limit` | `text_stego` | partial | Metin girdisinin yalnız ilk 8 MiB'ı okundu. |
 | `text_decoded_char_limit` | `text_stego` | partial | Çözülen metnin yalnız ilk 4.000.000 karakteri tutuldu. |
 | `text_analysis_char_limit` | `text_stego` | partial | Metin steganografi yöntemleri ilk 1 Mi karakteri inceledi; doğrudan flag araması çözülen metnin tamamını kapsadı. |
+| `flag_regex_timeout` | `flag_regex` | partial | Özel `--flag` eşleştirmesi 5 saniyelik eşleştirme başına sınırda (`limit`, milisaniye) durduruldu; durmadan önce o girdide bulunan flag'ler korunur. |
+| `flag_regex_budget_exhausted` | `flag_regex` | skipped, partial | Taramanın özel desen süre bütçesi (`--timeout`, milisaniye olarak gösterilir) bitti: `skipped` girdinin desenle aranmadığı, `partial` bir eşleştirmenin bütçe bittiği için durdurulduğu anlamına gelir (durmadan önce bulunan flag'ler korunur). |
+| `flag_regex_input_limit` | `flag_regex` | skipped | 16 Mi karakterden uzun bir girdi özel desenle aranmadı. |
+| `flag_match_limit` | `flag_regex` | partial | Özel desen tek bir girdide 1.024'ten fazla farklı eşleşme buldu; yalnız ilk 1.024'ü tutuldu. |
+| `flag_regex_worker_failure` | `flag_regex` | skipped | Özel desen işçisi başlatılamadı veya beklenmedik şekilde durdu; taramanın geri kalanında özel desen eşleştirmesi kapalı kalır (`limit` 0, birim `none`). |
+
+`flag_regex` kayıtları [Özel flag desenleri](#özel-flag-desenleri---flag) bölümünde açıklanır.
 
 Rapor görünümünün kısaltılması ayrıdır ve hiçbir zaman analiz sınırı olarak
 listelenmez: JSON ve TXT, saklanan stdout/stderr'i satır içi
@@ -906,7 +1066,7 @@ tutar.
 `--full-scan` hiçbir sınırı kaldırmaz. Henüz her sınır kaydedilmiyor: zaten
 metin olarak görünen sınırlar (örneğin PDF sayfa, PCAP paket, OLE makro ve
 belge ayrıştırıcı sınırları ile büyük girdi atlama nedenleri) mevcut
-`skip_reason`/stderr/stdout ifadelerini korur; 1.024 eşleşmelik flag sınırı,
+`skip_reason`/stderr/stdout ifadelerini korur; yerleşik flag deseninin 1.024 eşleşmelik sınırı,
 akış flag eşleşme sınırları, eklenti içi artifact taramalarının (PDF, OLE,
 belge, QR, OCR, text-stego) artifact bütçeleri, text-stego, OCR ve QR
 eklentilerinin çalışma alanı keşif sınırları ve outguess'in 1 MiB'lık
