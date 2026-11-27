@@ -392,8 +392,9 @@ reason. Both fields are `null` for reports that were not produced by a scan.
 *Unreleased: not part of the published v4.5.2 package.*
 
 Every parser and extractor works within fixed size, count and time budgets so
-that a hostile or huge file cannot exhaust memory, CPU or disk. When such a
-budget changes what was analysed, the report says so. A pipeline that
+that a hostile or huge file cannot exhaust memory, CPU or disk. When one of
+the recorded budgets listed below changes what was analysed, the report says
+so; not every budget is recorded yet. A pipeline that
 `completed` can still have incomplete coverage: `scan_status` describes how the
 scan ended, analysis limits describe what each tool could not fully examine.
 
@@ -441,7 +442,8 @@ existing `skip_reason`/stderr/stdout wording, and some budgets, such as the
 1,024-match flag cap, the streaming flag-match caps, the artifact budgets of
 plugin-internal artifact scans (PDF, OLE, document, QR, OCR, text-stego),
 workspace discovery caps of the text-stego, OCR and QR plugins and the 1 MiB
-extracted-payload check of outguess, are not reported. An empty
+extracted-payload check of outguess, are not reported. Text-stego truncation
+is also not reported for an input that was then skipped as non-text. An empty
 `analysis_limits` list therefore does not prove complete coverage.
 
 ---
@@ -858,10 +860,11 @@ taşır. Tarama tarafından üretilmeyen raporlarda iki alan da `null` olur.
 
 Her ayrıştırıcı ve çıkarıcı sabit boyut, sayı ve süre bütçeleriyle çalışır;
 böylece kötü niyetli veya çok büyük bir dosya belleği, işlemciyi ya da diski
-tüketemez. Böyle bir bütçe analiz edilen kapsamı değiştirdiğinde rapor bunu
-belirtir. `completed` olarak biten bir analiz hattının kapsamı yine eksik
-olabilir: `scan_status` taramanın nasıl bittiğini, analiz sınırları ise her
-aracın neyi tam inceleyemediğini anlatır.
+tüketemez. Aşağıda listelenen kayıtlı bütçelerden biri analiz edilen kapsamı
+değiştirdiğinde rapor bunu belirtir; henüz her bütçe kaydedilmiyor.
+`completed` olarak biten bir analiz hattının kapsamı yine eksik olabilir:
+`scan_status` taramanın nasıl bittiğini, analiz sınırları ise her aracın
+neyi tam inceleyemediğini anlatır.
 
 JSON raporlarına üst seviye `analysis_limits` listesi eklenir (kayıtlı bir
 sınıra ulaşılmadıysa boştur). TXT raporları, yerleşik Markdown writeup ve
@@ -907,7 +910,8 @@ belge ayrıştırıcı sınırları ile büyük girdi atlama nedenleri) mevcut
 akış flag eşleşme sınırları, eklenti içi artifact taramalarının (PDF, OLE,
 belge, QR, OCR, text-stego) artifact bütçeleri, text-stego, OCR ve QR
 eklentilerinin çalışma alanı keşif sınırları ve outguess'in 1 MiB'lık
-çıkarılan veri kontrolü gibi bazı bütçeler raporlanmaz. Bu yüzden boş bir
+çıkarılan veri kontrolü gibi bazı bütçeler raporlanmaz. Metin olmadığı için
+atlanan bir girdide text-stego kırpması da raporlanmaz. Bu yüzden boş bir
 `analysis_limits` listesi kapsamın tam olduğunu kanıtlamaz.
 
 ---
