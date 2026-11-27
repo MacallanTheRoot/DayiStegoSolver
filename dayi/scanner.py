@@ -14,12 +14,20 @@ import codecs
 import ipaddress
 import logging
 import math
+import multiprocessing
 import os
 import re
+import select
+import struct
+import threading
+import time
 import unicodedata
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
+from multiprocessing.connection import Connection
+from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Protocol
 
 from dayi.text_stego import (
     MAX_DIRECT_FLAG_CHARACTERS,
@@ -54,6 +62,23 @@ MAX_FLAG_REGEX_CHARS = 512
 MAX_FLAG_MATCHES = 1_024
 MAX_BUILTIN_FLAG_CONTENT_CHARS = 256
 MAX_ANALYSIS_LIMIT_EVENTS = 32
+# User flag patterns run in a killable worker process (T3.3). Each call stops
+# at this wall-clock deadline; all calls of one scan share a time budget
+# (the runner passes ``--timeout``; this default applies outside a runner).
+MAX_FLAG_REGEX_CALL_SECONDS = 5.0
+DEFAULT_FLAG_REGEX_BUDGET_SECONDS = 60.0
+# The budget is clamped to [0, this]: NaN, infinite or huge values never
+# remove the cumulative cap (unrelated tool timeouts keep their own meaning).
+MAX_FLAG_REGEX_BUDGET_SECONDS = 3600.0
+MAX_FLAG_REGEX_INPUT_CHARS = 16 * 1024 * 1024
+_FLAG_REGEX_START_SECONDS = 30.0
+_FLAG_REGEX_MEMORY_BYTES = 768 * 1024 * 1024
+_FLAG_REGEX_KILL_GRACE_SECONDS = 1.0
+# Worker IPC: length-prefixed frames on the pipe's file descriptor. The parent
+# end is non-blocking and every wait is a poll() bounded by the call deadline.
+_FRAME_HEADER = struct.Struct("!Q")
+_FLAG_REGEX_MAX_REQUEST_BYTES = MAX_FLAG_REGEX_INPUT_CHARS * 4
+_DEADLINE_IPC_SUPPORTED = os.name == "posix" and hasattr(select, "poll")
 BUILTIN_FLAG_PATTERN_DISPLAY = "built-in common CTF patterns"
 
 _BUILTIN_FLAG_REGEX = (
@@ -183,13 +208,440 @@ def record_analysis_limit(
         limits.append(event)
 
 
+class _GroupMatch(Protocol):
+    """Flag scanning only ever reads the full match, ``group(0)``."""
+
+    def group(self, index: Literal[0], /) -> str: ...
+
+
+class FlagMatcher(Protocol):
+    """What flag scanning needs from a pattern: ``re.Pattern[str]`` or
+    ``BoundedFlagPattern``."""
+
+    @property
+    def pattern(self) -> str: ...
+
+    @property
+    def flags(self) -> int: ...
+
+    def finditer(self, string: str, /) -> Iterator[_GroupMatch]: ...
+
+
 @dataclass(frozen=True)
 class FlagPatternConfig:
     """A compiled flag matcher and stable reporting metadata."""
 
-    compiled: re.Pattern
+    compiled: re.Pattern[str] | BoundedFlagPattern
     display: str
     source: Literal["user", "builtin"]
+
+
+def _wait_fd(fd: int, event: int, deadline: float) -> bool:
+    """Wait until ``fd`` is ready for ``event``; False once ``deadline`` passed."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
+    poller = select.poll()
+    poller.register(fd, event)
+    return bool(poller.poll(math.ceil(remaining * 1000)))
+
+
+def _send_frame(fd: int, data: bytes, deadline: float) -> bool:
+    """Write one frame; False if ``deadline`` passed first (non-blocking fd)."""
+    for part in (_FRAME_HEADER.pack(len(data)), data):
+        view = memoryview(part)
+        while view:
+            try:
+                view = view[os.write(fd, view):]
+            except BlockingIOError:
+                if not _wait_fd(fd, select.POLLOUT, deadline):
+                    return False
+    return True
+
+
+def _recv_exact(fd: int, size: int, deadline: float) -> bytes | None:
+    buffer = bytearray()
+    while len(buffer) < size:
+        try:
+            chunk = os.read(fd, min(size - len(buffer), 1 << 20))
+        except BlockingIOError:
+            if not _wait_fd(fd, select.POLLIN, deadline):
+                return None
+            continue
+        if not chunk:
+            raise EOFError("flag regex peer closed the connection")
+        buffer += chunk
+    return bytes(buffer)
+
+
+def _recv_frame(fd: int, max_size: int, deadline: float) -> bytes | None:
+    """Read one frame of at most ``max_size`` bytes; None on deadline.
+
+    A larger announced size raises ``ValueError`` before anything is
+    allocated; a closed peer raises ``EOFError``. With a blocking ``fd`` (the
+    worker side) the deadline is never consulted.
+    """
+    header = _recv_exact(fd, _FRAME_HEADER.size, deadline)
+    if header is None:
+        return None
+    (size,) = _FRAME_HEADER.unpack(header)
+    if size > max_size:
+        raise ValueError("flag regex frame exceeds its size limit")
+    return _recv_exact(fd, size, deadline)
+
+
+def _flag_regex_worker(
+    connection: Connection,
+    pattern: str,
+    flags: int,
+    memory_bytes: int,
+    cpu_seconds: int,
+    max_matches: int,
+) -> None:
+    """Match one user pattern per request; the parent kills this on deadline.
+
+    Replies per request: ``M``+match for each new unique match (so matches
+    found before a kill are kept), then ``D`` (done), ``L`` (a further unique
+    match was refused) or ``E`` (error). ``R``/``E`` acknowledge startup.
+    Frames use blocking I/O here; only the parent enforces deadlines.
+    """
+    if os.name == "posix":
+        os.setsid()  # Terminal SIGINT goes to the parent, which owns this process.
+        try:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+            # Backstop only: the parent kills the worker at each deadline.
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+        except (ImportError, OSError, ValueError):
+            pass
+    fd = connection.fileno()
+    try:
+        compiled = re.compile(pattern, flags)
+        _send_frame(fd, b"R", math.inf)
+    except BaseException:
+        _send_frame(fd, b"E", math.inf)
+        return
+    while True:
+        try:
+            request = _recv_frame(fd, _FLAG_REGEX_MAX_REQUEST_BYTES, math.inf)
+        except (EOFError, OSError, ValueError):
+            return
+        if request is None:  # unreachable on a blocking fd
+            return
+        try:
+            seen: set[str] = set()
+            status = b"D"
+            text = request.decode("utf-8", "surrogatepass")
+            for match in compiled.finditer(text):
+                value = match.group(0)
+                if value in seen:
+                    continue
+                if len(seen) >= max_matches:
+                    status = b"L"
+                    break
+                seen.add(value)
+                _send_frame(fd, b"M" + value.encode("utf-8", "surrogatepass"), math.inf)
+            _send_frame(fd, status, math.inf)
+        except BaseException:
+            try:
+                _send_frame(fd, b"E", math.inf)
+            except BaseException:
+                pass
+            return
+
+
+def _stop_flag_regex_process(process: BaseProcess) -> None:
+    if process.pid is None:
+        return
+    if process.is_alive():
+        process.kill()
+    process.join(timeout=_FLAG_REGEX_KILL_GRACE_SECONDS)
+
+
+class _FlagRegexEngine:
+    """One lazily started worker plus the time budget shared by one scan.
+
+    Everything done under the request lock (worker start, IPC, matching,
+    kill/reap after a timeout) is charged to the budget, so the total time all
+    callers can wait on this engine is the budget plus one overrun of at most
+    a worker start (``_FLAG_REGEX_START_SECONDS``) and one kill/reap grace
+    (the reap after a failure is not charged; matching stops after it).
+    """
+
+    def __init__(self, pattern: str, flags: int, budget_seconds: float) -> None:
+        self._pattern = pattern
+        self._flags = flags
+        self._request_lock = threading.Lock()  # one request at a time
+        self._state_lock = threading.Lock()  # lets close() kill mid-request
+        self._process: BaseProcess | None = None
+        self._connection: Connection | None = None
+        self.worker_starts = 0
+        self.reset(budget_seconds)
+
+    def reset(self, budget_seconds: float) -> None:
+        """Start a new budget with a fresh worker (started on first use)."""
+        try:
+            budget = float(budget_seconds)
+        except OverflowError:  # an int beyond float range
+            budget = math.inf
+        if math.isnan(budget):
+            budget = math.inf  # treated as "no value": the finite maximum
+        with self._request_lock:
+            self._discard_worker()
+            self._budget = min(max(0.0, budget), MAX_FLAG_REGEX_BUDGET_SECONDS)
+            self._spent = 0.0
+            self._failed = False
+            self._budget_warned = False
+            with self._state_lock:
+                self._closed = False
+
+    def close(self) -> None:
+        """Kill the worker now; matching is refused until ``reset``."""
+        with self._state_lock:
+            self._closed = True
+            process = self._process
+        if process is not None:
+            _stop_flag_regex_process(process)  # unblocks a pending request
+        with self._request_lock:
+            self._discard_worker()
+
+    def _discard_worker(self) -> None:
+        with self._state_lock:
+            process, connection = self._process, self._connection
+            self._process = self._connection = None
+        if connection is not None:
+            connection.close()
+        if process is not None:
+            _stop_flag_regex_process(process)
+
+    def _start_worker(self) -> Connection:
+        if not _DEADLINE_IPC_SUPPORTED:
+            raise RuntimeError("deadline-bounded worker IPC requires POSIX poll()")
+        context = multiprocessing.get_context("spawn")
+        parent, child = context.Pipe(duplex=True)
+        cpu_seconds = int(self._budget + MAX_FLAG_REGEX_CALL_SECONDS) + 2
+        process = context.Process(
+            target=_flag_regex_worker,
+            args=(
+                child, self._pattern, self._flags, _FLAG_REGEX_MEMORY_BYTES,
+                cpu_seconds, MAX_FLAG_MATCHES,
+            ),
+            daemon=True,
+        )
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("flag regex engine is closed")
+            self._process, self._connection = process, parent
+        try:
+            process.start()
+        finally:
+            child.close()
+        os.set_blocking(parent.fileno(), False)
+        with self._state_lock:
+            closed = self._closed  # close() may have run before start()
+        if closed or _recv_frame(
+            parent.fileno(), 1, time.monotonic() + _FLAG_REGEX_START_SECONDS
+        ) != b"R":
+            raise RuntimeError("flag regex worker did not start")
+        self.worker_starts += 1
+        return parent
+
+    @staticmethod
+    def _exchange(
+        connection: Connection, payload: bytes, deadline: float, hits: list[str]
+    ) -> str:
+        fd = connection.fileno()
+        try:
+            if not _send_frame(fd, payload, deadline):
+                return "timeout"
+            while True:
+                message = _recv_frame(fd, len(payload) + 1, deadline)
+                if message is None:
+                    return "timeout"
+                kind = message[:1]
+                if kind == b"M":
+                    hits.append(message[1:].decode("utf-8", "surrogatepass"))
+                elif kind == b"D":
+                    return "done"
+                elif kind == b"L":
+                    return "limit"
+                else:
+                    return "error"
+        except (EOFError, OSError, ValueError):
+            return "error"
+
+    def _budget_event(self, action: Literal["skipped", "partial"]) -> AnalysisLimit:
+        if not self._budget_warned:
+            self._budget_warned = True
+            logger.warning(
+                "[scanner] Yeğenim flag desenine ayırdığım süre bütçesi "
+                "bitti; kalan girdileri bu desenle taramıyorum, rapora "
+                "eksik tarama olarak yazıyorum."
+            )
+        return AnalysisLimit(
+            "flag_regex", "flag_regex_budget_exhausted", action,
+            int(self._budget * 1000), "milliseconds",
+        )
+
+    def _fail(self, events: list[AnalysisLimit], message: str) -> None:
+        self._failed = True
+        self._discard_worker()
+        if not self._closed:  # a deliberate close() is not a failure to log
+            logger.error(message)
+        record_analysis_limit(events, AnalysisLimit(
+            "flag_regex", "flag_regex_worker_failure", "skipped", 0, "none",
+        ))
+
+    def collect(self, text: str, events: list[AnalysisLimit]) -> list[str]:
+        """Return unique matches in order; record every coverage reduction."""
+        with self._request_lock:
+            if self._closed or self._failed:
+                record_analysis_limit(events, AnalysisLimit(
+                    "flag_regex", "flag_regex_worker_failure", "skipped", 0, "none",
+                ))
+                return []
+            if len(text) > MAX_FLAG_REGEX_INPUT_CHARS:
+                record_analysis_limit(events, AnalysisLimit(
+                    "flag_regex", "flag_regex_input_limit", "skipped",
+                    MAX_FLAG_REGEX_INPUT_CHARS, "characters", len(text),
+                ))
+                return []
+            if self._budget - self._spent <= 0:
+                record_analysis_limit(events, self._budget_event("skipped"))
+                return []
+            started = time.monotonic()
+            try:
+                connection = (
+                    self._connection
+                    if self._connection is not None
+                    else self._start_worker()
+                )
+            except Exception as exc:
+                self._spent += time.monotonic() - started
+                self._fail(
+                    events,
+                    f"[scanner] Yeğenim flag deseni işçisi başlatılamadı: {exc!r}",
+                )
+                return []
+            except BaseException:
+                self._discard_worker()
+                raise
+            self._spent += time.monotonic() - started
+            remaining = self._budget - self._spent
+            if remaining <= 0:
+                record_analysis_limit(events, self._budget_event("skipped"))
+                return []
+            call_limit = MAX_FLAG_REGEX_CALL_SECONDS
+            started = time.monotonic()
+            payload = text.encode("utf-8", "surrogatepass")
+            hits: list[str] = []
+            try:
+                status = self._exchange(
+                    connection, payload, started + min(call_limit, remaining), hits
+                )
+                if status == "timeout":
+                    self._discard_worker()  # kill + reap is charged as well
+            except BaseException:
+                self._discard_worker()  # e.g. KeyboardInterrupt while waiting
+                raise
+            finally:
+                self._spent += time.monotonic() - started
+            if status == "timeout":
+                logger.warning(
+                    "[scanner] Yeğenim flag deseni bu girdide süre sınırını "
+                    "aştı; eşleştiriciyi durdurdum, girdi eksik tarandı."
+                )
+                record_analysis_limit(
+                    events,
+                    self._budget_event("partial")
+                    if remaining < call_limit
+                    else AnalysisLimit(
+                        "flag_regex", "flag_regex_timeout", "partial",
+                        int(call_limit * 1000), "milliseconds",
+                    ),
+                )
+            elif status == "limit":
+                record_analysis_limit(events, AnalysisLimit(
+                    "flag_regex", "flag_match_limit", "partial",
+                    MAX_FLAG_MATCHES, "matches",
+                ))
+            elif status == "error":
+                self._fail(
+                    events,
+                    "[scanner] Yeğenim flag deseni işçisi beklenmedik şekilde "
+                    "durdu; bu taramada desenle eşleştirme kapalı.",
+                )
+            return hits
+
+
+class _BoundedMatch:
+    """The full-match value of one bounded match (``group()`` / ``group(0)``)."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def group(self, index: int = 0, /) -> str:
+        if index != 0:
+            raise IndexError("bounded flag matches expose only the full match")
+        return self._value
+
+
+class BoundedFlagPattern:
+    """A user flag pattern that is matched only in a killable worker process.
+
+    Implements ``FlagMatcher``, the ``re.Pattern`` subset flag scanning uses:
+    ``pattern``, ``flags`` and ``finditer`` (one match per unique value,
+    first-occurrence order, at most ``MAX_FLAG_MATCHES``; only ``group(0)``).
+    Other ``re.Pattern`` methods are deliberately absent. Coverage reductions
+    (timeout, budget, input size, match count, worker failure) are appended to
+    ``limit_events``. ``for_plugin`` returns a view that shares the worker and
+    budget but collects its own events. Outside ``DayiRunner`` the budget is
+    ``budget_seconds`` for the object's lifetime until ``start_scan``.
+    ``start_scan`` and ``close`` belong to a single owner (the runner) and must
+    not be called concurrently with each other; matching may run in any thread.
+    """
+
+    def __init__(
+        self,
+        compiled: re.Pattern[str],
+        *,
+        budget_seconds: float = DEFAULT_FLAG_REGEX_BUDGET_SECONDS,
+        _engine: _FlagRegexEngine | None = None,
+    ) -> None:
+        self._compiled = compiled
+        self.pattern: str = compiled.pattern
+        self.flags: int = compiled.flags
+        self._engine = (
+            _engine
+            if _engine is not None
+            else _FlagRegexEngine(compiled.pattern, compiled.flags, budget_seconds)
+        )
+        self.limit_events: list[AnalysisLimit] = []
+
+    def for_plugin(self) -> BoundedFlagPattern:
+        return BoundedFlagPattern(self._compiled, _engine=self._engine)
+
+    def start_scan(self, budget_seconds: float) -> None:
+        """Reset budget, failure state, worker and events for a new scan."""
+        self._engine.reset(budget_seconds)
+        self.limit_events.clear()
+
+    def close(self) -> None:
+        """Stop the worker; matching is refused until ``start_scan``."""
+        self._engine.close()
+
+    @property
+    def worker_starts(self) -> int:
+        return self._engine.worker_starts
+
+    def finditer(self, string: str, /) -> Iterator[_BoundedMatch]:
+        return iter([
+            _BoundedMatch(value)
+            for value in self._engine.collect(string, self.limit_events)
+        ])
 
 
 def _safe_preview(value: str, limit: int = _PREVIEW_LIMIT) -> str:
@@ -523,7 +975,7 @@ def scan_artifacts(
     return findings
 
 
-def _collect_matches(pattern: re.Pattern, text: str) -> list[str]:
+def _collect_matches(pattern: FlagMatcher, text: str) -> list[str]:
     """Extract unique full-match strings while preserving insertion order."""
     seen: dict[str, None] = {}
     for match in pattern.finditer(text):
@@ -533,7 +985,7 @@ def _collect_matches(pattern: re.Pattern, text: str) -> list[str]:
     return list(seen)
 
 
-def scan_text(content: str, pattern: re.Pattern) -> list[str]:
+def scan_text(content: str, pattern: FlagMatcher) -> list[str]:
     """Search text for all occurrences of a compiled flag pattern."""
     return _collect_matches(pattern, content)
 
@@ -541,7 +993,7 @@ def scan_text(content: str, pattern: re.Pattern) -> list[str]:
 class IncrementalFlagScanner:
     """Find bounded regex matches in one independently decoded byte stream."""
 
-    def __init__(self, pattern: re.Pattern) -> None:
+    def __init__(self, pattern: FlagMatcher) -> None:
         self.pattern = pattern
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._tail = ""
@@ -596,7 +1048,7 @@ class IncrementalFlagScanner:
 class SubprocessFlagScanner:
     """Track bounded flag matches and their stdout/stderr source."""
 
-    def __init__(self, pattern: re.Pattern) -> None:
+    def __init__(self, pattern: FlagMatcher) -> None:
         self.pattern = pattern
         self.stdout = IncrementalFlagScanner(pattern)
         self.stderr = IncrementalFlagScanner(pattern)
@@ -616,7 +1068,7 @@ class SubprocessFlagScanner:
 
 def scan_file(
     filepath: Path,
-    pattern: re.Pattern,
+    pattern: FlagMatcher,
     *,
     limits: list[AnalysisLimit] | None = None,
 ) -> list[str]:
@@ -649,7 +1101,7 @@ def scan_file(
 
 def scan_directory(
     directory: Path,
-    pattern: re.Pattern,
+    pattern: FlagMatcher,
     *,
     limits: list[AnalysisLimit] | None = None,
 ) -> dict[str, list[str]]:
@@ -811,7 +1263,7 @@ def build_flag_pattern_config(flag_regex: str | None) -> FlagPatternConfig | Non
     if compiled is None:
         return None
     return FlagPatternConfig(
-        compiled=compiled,
+        compiled=BoundedFlagPattern(compiled),
         display=flag_regex,
         source="user",
     )

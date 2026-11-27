@@ -55,6 +55,43 @@ All notable changes to Dayı Stego Solver are documented here.
   `analysis_limits` field; `scan_file`, `scan_directory`, `scan_artifacts`
   and `async_run_command` accept an optional keyword-only `limits` list.
 
+### Security
+
+- Custom `--flag` patterns are now matched in a separate worker process with a
+  time limit, so a pattern with catastrophic backtracking (for example
+  `\d+\d+\d+\d+x` or `F.*L.*A.*G.*\}`, both accepted by the existing
+  validation) can no longer hang a scan on hostile input. A match is stopped
+  by killing the worker after at most 5 seconds (less when the scan budget is
+  almost used up), and all custom-pattern work in one scan (worker start-up,
+  matching, communication, stopping the worker) shares a budget of `--timeout`
+  seconds, which can be exceeded once by at most one worker start-up (up to 30
+  seconds) plus one worker stop. The budget is capped at one hour, so a larger
+  or non-finite `--timeout` (`inf`, `nan`) does not remove it; the tools keep
+  their usual `--timeout`. Sending an input to the worker and reading its
+  results end at the same per-match deadline, so a worker that stops
+  responding is killed instead of blocking the scan. Without POSIX `poll()`
+  (Linux is the supported platform) custom-pattern matching in the main
+  process is turned off and reported. Stopped, budget-limited, oversized (over
+  16 Mi characters) or worker-failed matches and more than 1,024 distinct
+  matches in one input are reported in `analysis_limits` with source
+  `flag_regex`; flags found before a stop are kept. While the budget is not
+  used up, matching results are unchanged; validation, early stop,
+  `--full-scan`, exit codes and report keys are unchanged, and the built-in
+  pattern still runs in process. Custom patterns pay a worker start-up per
+  scan and inter-process overhead per match; because the start-up is charged
+  to the budget, a `--timeout` shorter than the worker start-up leaves no time
+  for custom-pattern matching in the main process (reported, not silent).
+  Matching inside the existing isolated text-stego, document and pytesseract
+  OCR workers is still bounded only by those plugins' timeouts. A match made
+  from the event loop blocks it, and can delay cancellation, for up to the
+  time left in the budget. This is not a deadline for the whole scan and not a
+  complete denial-of-service guarantee. `build_flag_pattern_config` returns a
+  `BoundedFlagPattern` for custom patterns: it provides `pattern`, `flags` and
+  `finditer` (full match only) but not `search`, `match`, `findall` or `sub`,
+  and outside `DayiRunner` it has a 60-second budget until `start_scan()` is
+  called. `DayiRunner` accepts it as `pattern`. `compile_pattern` and
+  `compile_user_pattern` still return a plain `re.Pattern`.
+
 ## [4.5.2] - 2026-11-26
 
 Stability patch release prepared on 2026-11-26.

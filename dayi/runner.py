@@ -21,6 +21,7 @@ from dayi.scanner import (
     MAX_ARTIFACT_FINDINGS,
     AnalysisLimit,
     ArtifactFinding,
+    BoundedFlagPattern,
     decode_base64_text,
     record_analysis_limit,
     scan_artifacts,
@@ -206,7 +207,7 @@ class DayiRunner:
     def __init__(
         self,
         target: Path,
-        pattern: re.Pattern,
+        pattern: re.Pattern[str] | BoundedFlagPattern,
         wordlist: Path | None = None,
         timeout: float = 60.0,
         bf_threads: int = 8,
@@ -283,6 +284,8 @@ class DayiRunner:
             self._last_report = self._build_report()
             self._ui_call("close")
             raise
+        if isinstance(self.pattern, BoundedFlagPattern):
+            self.pattern.start_scan(budget_seconds=self.timeout)
         cancelled = False
         fatal_error: BaseException | None = None
 
@@ -351,6 +354,8 @@ class DayiRunner:
                             f"tökezledi; raporu yine kurtarıyorum. ({exc})"
                         )
             finally:
+                if isinstance(self.pattern, BoundedFlagPattern):
+                    self.pattern.close()
                 workspace_path = self._workspace
                 if workspace_path is not None and self._workspace_has_useful_files(
                     workspace_path
@@ -446,7 +451,11 @@ class DayiRunner:
         candidates = self._mini_wordlist if mini_wordlist is None else mini_wordlist
         return PluginContext(
             target=self.target,
-            flag_pattern=self.pattern,
+            flag_pattern=(
+                self.pattern.for_plugin()
+                if isinstance(self.pattern, BoundedFlagPattern)
+                else self.pattern
+            ),
             timeout=self.timeout,
             wordlist=self.wordlist,
             mini_wordlist=tuple(candidates),
@@ -787,6 +796,10 @@ class DayiRunner:
         except asyncio.CancelledError:
             self._ui_call("plugin_finished", plugin.plugin_id, "cancelled")
             raise
+        if isinstance(context.flag_pattern, BoundedFlagPattern):
+            # User-regex coverage reductions belong to the plugin that matched.
+            for event in list(context.flag_pattern.limit_events):
+                record_analysis_limit(result.analysis_limits, event)
         self._ui_call(
             "plugin_finished",
             plugin.plugin_id,
